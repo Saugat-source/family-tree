@@ -135,6 +135,12 @@ create trigger persons_guard
 alter table public.profiles enable row level security;
 alter table public.persons  enable row level security;
 
+-- Signed-in users reach the tables through the API; the policies below decide what they see.
+grant usage on schema public to anon, authenticated;
+grant select, update, delete on public.profiles to authenticated;
+grant select, insert, update, delete on public.persons to authenticated;
+grant execute on function public.is_approved(), public.is_admin() to authenticated;
+
 -- Members see their own account; admins see everyone's.
 create policy "read own profile, admin reads all" on public.profiles
   for select using (id = auth.uid() or public.is_admin());
