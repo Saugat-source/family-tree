@@ -36,6 +36,9 @@
     persons: [],
     byId: new Map(),
     kids: new Map(),
+    spouses: new Map(),
+    zoom: 1,
+    treeMode: (() => { try { return localStorage.getItem('treeMode') || 'chart'; } catch { return 'chart'; } })(),
     photos: new Map(),
     collapsed: new Set(),
     view: 'tree',
@@ -75,7 +78,25 @@
     return m;
   }
 
+  // Spouses married into the family: they hang off their partner instead of a parent.
+  const isSpouse = (p) => !!p?.spouse_of;
+  const partnerOf = (p) => (isSpouse(p) ? state.byId.get(p.spouse_of) : null);
+  const inLine = (p) => partnerOf(p) || p; // the family-line person for p
+  const generation = (p) => lineage(inLine(p)).length;
+  const spousesOf = (id) => state.spouses.get(id) || [];
+  function relationTo(s) { // "Wife of …" / "Husband of …" for a spouse
+    const partner = partnerOf(s);
+    const word = s.gender === 'female' ? 'Wife' : s.gender === 'male' ? 'Husband' : 'Spouse';
+    return partner ? `${word} of ${partner.full_name}` : word;
+  }
+  // Children of a spouse are the partner's children with this spouse as other parent.
+  function childrenOf(p) {
+    if (isSpouse(p)) return (state.kids.get(p.spouse_of) || []).filter((k) => k.other_parent_id === p.id);
+    return state.kids.get(p.id) || [];
+  }
+
   function lineage(p) {
+    if (isSpouse(p) && partnerOf(p)) return [...lineage(partnerOf(p)), p];
     const out = [];
     const seen = new Set();
     let cur = p;
@@ -145,10 +166,22 @@
     state.persons = data || [];
     state.byId = new Map(state.persons.map((p) => [p.id, p]));
     state.kids = new Map();
+    state.spouses = new Map();
     for (const p of state.persons) {
+      if (p.spouse_of && state.byId.has(p.spouse_of)) {
+        if (!state.spouses.has(p.spouse_of)) state.spouses.set(p.spouse_of, []);
+        state.spouses.get(p.spouse_of).push(p);
+        continue;
+      }
       const key = p.parent_id && state.byId.has(p.parent_id) ? p.parent_id : null;
       if (!state.kids.has(key)) state.kids.set(key, []);
       state.kids.get(key).push(p);
+    }
+    // Group each family's children by their other parent so lines from each couple stay together.
+    for (const [id, kids] of state.kids) {
+      if (!id) continue;
+      const order = spousesOf(id).map((x) => x.id);
+      kids.sort((a, b) => (order.indexOf(a.other_parent_id) >>> 0) - (order.indexOf(b.other_parent_id) >>> 0));
     }
     state.photos = new Map();
     const paths = state.persons.map((p) => p.photo_path).filter(Boolean);
@@ -321,7 +354,8 @@
   function renderTree() {
     const main = document.getElementById('main');
     const me = myPerson();
-    const gens = state.persons.reduce((m, p) => Math.max(m, lineage(p).length), 0);
+    const gens = state.persons.filter((p) => !isSpouse(p)).reduce((m, p) => Math.max(m, lineage(p).length), 0);
+    const chart = state.treeMode === 'chart';
     main.innerHTML = `
       <section class="toolbar">
         <div class="search">
@@ -331,31 +365,188 @@
         <div class="tool-btns">
           ${me ? `<button class="btn sm" data-action="find-me">Find me</button>
             <button class="btn primary sm" data-action="edit" data-id="${me.id}">✎ Edit my details</button>` : ''}
-          <button class="btn ghost sm" data-action="expand-all">Expand all</button>
-          <button class="btn ghost sm" data-action="collapse-all">Collapse all</button>
         </div>
       </section>
-      <p class="stats muted">${state.persons.length} ${state.persons.length === 1 ? 'person' : 'people'} · ${gens} ${gens === 1 ? 'generation' : 'generations'}</p>
       ${me || !canContribute() ? '' : `<div class="callout">
           <div><b>You're not in the tree yet.</b> Answer a few questions about yourself and your parents,
           and we'll find where you connect to the family.</div>
           <button class="btn primary sm" data-action="view" data-view="connect">Connect me to the tree</button>
         </div>`}
-      <div class="tree" id="tree"></div>`;
-    renderTreeBody();
+      <div class="tree-bar">
+        <div class="seg two-way" role="group" aria-label="Tree layout">
+          <button class="${chart ? 'on' : ''}" data-action="tree-mode" data-mode="chart" aria-pressed="${chart}">Family chart</button>
+          <button class="${chart ? '' : 'on'}" data-action="tree-mode" data-mode="list" aria-pressed="${!chart}">List</button>
+        </div>
+        <span class="stats muted">${state.persons.length} ${state.persons.length === 1 ? 'person' : 'people'} · ${gens} ${gens === 1 ? 'generation' : 'generations'}</span>
+        <div class="tool-btns">
+          ${chart ? `<button class="btn ghost sm icon" data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button>
+          <button class="btn ghost sm icon" data-action="zoom" data-dir="1" aria-label="Zoom in">+</button>
+          <button class="btn ghost sm" data-action="zoom" data-dir="0">Fit</button>` : ''}
+          <button class="btn ghost sm" data-action="expand-all">Expand all</button>
+          <button class="btn ghost sm" data-action="collapse-all">Collapse all</button>
+        </div>
+      </div>
+      <div class="${chart ? 'tree-host' : 'tree'}" id="tree"></div>`;
+    if (chart && !state.zoomSet) { state.zoom = window.innerWidth < 600 ? 0.7 : 1; state.zoomSet = true; }
+    renderTreeBody({ center: true });
   }
 
-  function renderTreeBody() {
+  function renderTreeBody({ center = false } = {}) {
     const el = document.getElementById('tree');
     if (!el) return;
     const roots = state.kids.get(null) || [];
-    el.innerHTML = roots.length
-      ? `<ul>${roots.map((r) => nodeHtml(r, 1)).join('')}</ul>`
-      : '<p class="muted">No one is in the tree yet.</p>';
+    if (!roots.length) { el.innerHTML = '<p class="muted">No one is in the tree yet.</p>'; return; }
+    if (state.treeMode !== 'chart') {
+      el.innerHTML = `<ul>${roots.map((r) => nodeHtml(r, 1)).join('')}</ul>`;
+      return;
+    }
+    const wrap = document.getElementById('chart-wrap');
+    const keep = wrap && !center ? { left: wrap.scrollLeft, top: wrap.scrollTop } : null;
+    el.innerHTML = `
+      <div class="chart-wrap" id="chart-wrap">
+        <div class="chart-sizer" id="chart-sizer">
+          <div class="chart" id="chart-inner">
+            <svg class="links" id="chart-links" aria-hidden="true"></svg>
+            <ul>${roots.map((r) => unitHtml(r, 1)).join('')}</ul>
+          </div>
+        </div>
+      </div>`;
+    layoutChart();
+    const w = document.getElementById('chart-wrap');
+    if (keep) { w.scrollLeft = keep.left; w.scrollTop = keep.top; } else {
+      const first = document.querySelector('#chart-inner .unit');
+      if (first) w.scrollLeft = Math.max(0, (first.offsetLeft + first.offsetWidth / 2) * state.zoom - w.clientWidth / 2);
+    }
   }
 
+  // One person card for the chart.
+  function pcard(p, gen) {
+    const mine = p.user_id && p.user_id === uid();
+    const spouse = isSpouse(p);
+    const tag = spouse ? (p.gender === 'female' ? 'Wife' : p.gender === 'male' ? 'Husband' : 'Spouse') : `${ordinal(gen)} gen`;
+    return `
+      <button class="pcard ${p.gender || ''}${spouse ? ' spouse' : ''}${mine ? ' me' : ''}${p.is_living ? '' : ' late'}"
+        data-action="open" data-id="${p.id}" id="n-${p.id}">
+        ${avatar(p, 'lg')}
+        <span class="pc-name">${esc(p.full_name)}</span>
+        <span class="pc-meta">${esc(lifespan(p)) || '&nbsp;'}</span>
+        <span class="pc-tag">${mine ? '<b>You</b> · ' : ''}${tag}</span>
+      </button>`;
+  }
+
+  // A family unit: the person, their spouse(s) beside them, and their children below.
+  function unitHtml(p, gen) {
+    const sp = spousesOf(p.id);
+    const kids = state.kids.get(p.id) || [];
+    const open = !state.collapsed.has(p.id);
+    return `
+      <li>
+        <div class="unit" data-id="${p.id}">
+          ${pcard(p, gen)}
+          ${sp.map((s) => `<span class="wed" aria-hidden="true"><i></i></span>${pcard(s, gen)}`).join('')}
+        </div>
+        ${kids.length ? `<button class="kids-toggle" data-action="toggle" data-id="${p.id}" aria-expanded="${open}"
+          aria-label="${open ? 'Hide' : 'Show'} ${kids.length} ${kids.length === 1 ? 'child' : 'children'} of ${esc(p.full_name)}">${open ? '−' : '+'} ${kids.length}</button>` : ''}
+        ${kids.length && open ? `<ul>${kids.map((k) => unitHtml(k, gen + 1)).join('')}</ul>` : ''}
+      </li>`;
+  }
+
+  // Size the zoomed chart and draw the lines: from both parents' boxes down to a
+  // shared point, then an arrow to each child.
+  function layoutChart() {
+    const inner = document.getElementById('chart-inner');
+    const sizer = document.getElementById('chart-sizer');
+    const svg = document.getElementById('chart-links');
+    if (!inner || !svg) return;
+    const z = state.zoom;
+    inner.style.transform = `scale(${z})`;
+    const W = inner.offsetWidth;
+    const H = inner.offsetHeight;
+    sizer.style.width = `${W * z}px`;
+    sizer.style.height = `${H * z}px`;
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+    const base = inner.getBoundingClientRect();
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      const x = (r.left - base.left) / z;
+      const y = (r.top - base.top) / z;
+      const w = r.width / z;
+      const h = r.height / z;
+      return { cx: x + w / 2, top: y, bottom: y + h };
+    };
+    let couples = '';
+    let arrows = '';
+    inner.querySelectorAll('.unit').forEach((unit) => {
+      const kidsUl = unit.parentElement.querySelector(':scope > ul');
+      if (!kidsUl) return;
+      const cards = [...unit.querySelectorAll(':scope > .pcard')];
+      const main = box(cards[0]);
+      const spouseEls = cards.slice(1);
+      const coupleY = main.bottom + 18;
+      const kidCards = [...kidsUl.querySelectorAll(':scope > li > .unit > .pcard:first-child')];
+      if (!kidCards.length) return;
+      const groups = new Map();
+      for (const c of kidCards) {
+        const kid = state.byId.get(c.dataset.id);
+        const sEl = spouseEls.find((e) => e.dataset.id === kid?.other_parent_id)
+          || (spouseEls.length === 1 && !kid?.other_parent_id ? spouseEls[0] : null);
+        const key = sEl ? sEl.dataset.id : '';
+        if (!groups.has(key)) groups.set(key, { sEl, kids: [] });
+        groups.get(key).kids.push(box(c));
+      }
+      let gi = 0;
+      for (const { sEl, kids } of groups.values()) {
+        const top = Math.min(...kids.map((k) => k.top));
+        const busY = top - 22 - gi * 8;
+        let sx = main.cx;
+        let startY = main.bottom;
+        if (sEl) {
+          const s = box(sEl);
+          sx = (main.cx + s.cx) / 2;
+          startY = coupleY;
+          couples += `M${main.cx},${main.bottom}V${coupleY}H${s.cx}V${s.bottom}`;
+        }
+        for (const k of kids) arrows += `<path d="M${sx},${startY}V${busY}H${k.cx}V${k.top - 3}" marker-end="url(#arrowhead)"/>`;
+        gi += 1;
+      }
+    });
+    svg.innerHTML = `
+      <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+      <path class="couple" d="${couples}"/>
+      <g class="desc">${arrows}</g>`;
+  }
+
+  function setZoom(dir) {
+    const wrap = document.getElementById('chart-wrap');
+    const inner = document.getElementById('chart-inner');
+    if (!wrap || !inner) return;
+    const old = state.zoom;
+    let z = dir === 0
+      ? Math.min(1, (wrap.clientWidth - 8) / inner.offsetWidth)
+      : old * (dir > 0 ? 1.2 : 1 / 1.2);
+    z = Math.max(0.25, Math.min(1.8, z));
+    // Keep the middle of the view in place while zooming.
+    const cx = (wrap.scrollLeft + wrap.clientWidth / 2) / old;
+    const cy = (wrap.scrollTop + wrap.clientHeight / 2) / old;
+    state.zoom = z;
+    layoutChart();
+    wrap.scrollLeft = dir === 0 ? 0 : cx * z - wrap.clientWidth / 2;
+    wrap.scrollTop = dir === 0 ? 0 : cy * z - wrap.clientHeight / 2;
+  }
+
+  let relayoutTimer;
+  const relayout = () => { clearTimeout(relayoutTimer); relayoutTimer = setTimeout(layoutChart, 120); };
+  window.addEventListener('resize', relayout);
+  document.fonts?.ready.then(relayout);
+
+  // The simpler indented list, handy on small screens.
   function nodeHtml(p, gen) {
     const kids = state.kids.get(p.id) || [];
+    const sp = spousesOf(p.id);
     const open = !state.collapsed.has(p.id);
     const mine = p.user_id && p.user_id === uid();
     const meta = [`${ordinal(gen)} gen`, lifespan(p), kids.length ? `${kids.length} ${kids.length === 1 ? 'child' : 'children'}` : '']
@@ -374,6 +565,8 @@
             </span>
           </button>
         </div>
+        ${sp.length ? `<div class="node-spouses">${sp.map((s) => `<button class="spouse-chip" data-action="open" data-id="${s.id}" id="n-${s.id}">
+          <span class="ring" aria-hidden="true"></span>${avatar(s, 'xs')}<span>${esc(s.full_name)}</span></button>`).join('')}</div>` : ''}
         ${kids.length && open ? `<ul>${kids.map((k) => nodeHtml(k, gen + 1)).join('')}</ul>` : ''}
       </li>`;
   }
@@ -381,14 +574,29 @@
   function reveal(id) {
     const p = state.byId.get(id);
     if (!p) return;
-    for (const a of lineage(p).slice(0, -1)) state.collapsed.delete(a.id);
+    for (const a of lineage(inLine(p)).slice(0, -1)) state.collapsed.delete(a.id);
     renderTreeBody();
     const el = document.getElementById(`n-${id}`);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      const wrap = el.closest('.chart-wrap');
+      if (wrap) {
+        // Scroll the chart box itself, then bring the box into view on the page.
+        const r = el.getBoundingClientRect();
+        const w = wrap.getBoundingClientRect();
+        wrap.scrollLeft += r.left - w.left - (wrap.clientWidth - r.width) / 2;
+        wrap.scrollTop += r.top - w.top - (wrap.clientHeight - r.height) / 2;
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      }
       el.classList.add('flash');
       setTimeout(() => el.classList.remove('flash'), 2000);
     }
+  }
+
+  function pathLabel(p) {
+    if (isSpouse(p)) return relationTo(p);
+    return lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ') || 'Top ancestor';
   }
 
   function updateSearch(q) {
@@ -402,23 +610,34 @@
           <button class="result" data-action="reveal" data-id="${p.id}">
             ${avatar(p, 'sm')}
             <span><span class="name">${esc(p.full_name)}</span>
-            <span class="path">${esc(lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ') || 'Top ancestor')}</span></span>
+            <span class="path">${esc(pathLabel(p))}</span></span>
           </button>`).join('')
       : '<p class="muted pad">No one found with that name.</p>';
   }
 
   // ---------------------------------------------------------------- person details
 
+  function chipList(list) {
+    return `<div class="chips">${list.map((k) => `<button class="chip" data-action="open" data-id="${k.id}">${avatar(k, 'xs')}${esc(k.full_name)}</button>`).join('')}</div>`;
+  }
+
   function openDetail(id) {
     const p = state.byId.get(id);
     if (!p) return;
+    const spouse = isSpouse(p);
     const path = lineage(p);
-    const kids = state.kids.get(p.id) || [];
-    const parent = p.parent_id && state.byId.get(p.parent_id);
+    const kids = childrenOf(p);
+    const partners = spouse ? [partnerOf(p)].filter(Boolean) : spousesOf(p.id);
+    const parent = !spouse && p.parent_id && state.byId.get(p.parent_id);
+    const other = !spouse && p.other_parent_id && state.byId.get(p.other_parent_id);
+    const childWord = p.gender === 'female' ? 'Daughter' : p.gender === 'male' ? 'Son' : 'Child';
+    const subtitle = spouse ? relationTo(p)
+      : parent ? `${childWord} of ${parent.full_name}${other ? ` and ${other.full_name}` : ''}` : 'Top ancestor';
+    const partnerHeading = spouse ? (partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse')
+      : partners.length > 1 ? 'Spouses' : partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse';
     const rows = [
       ['Born', [fmtDate(p.birth_date), p.birth_place].filter(Boolean).join(', ')],
       ['Died', p.is_living ? '' : fmtDate(p.death_date) || 'Late'],
-      ['Spouse', p.spouse_name],
       ['Occupation', p.occupation],
       ['Lives in', p.current_address],
       ['Phone', p.phone],
@@ -430,22 +649,24 @@
       <div class="detail-head">
         ${photo ? `<img class="photo" src="${esc(photo)}" alt="Photo of ${esc(p.full_name)}">` : `<span class="photo initials">${esc(initials(p.full_name))}</span>`}
         <div>
-          <p class="eyebrow">${ordinal(path.length)} generation${p.is_living ? '' : ' · Late'}</p>
+          <p class="eyebrow">${ordinal(generation(p))} generation${spouse ? ' · married in' : ''}${p.is_living ? '' : ' · Late'}</p>
           <h2>${esc(p.full_name)}</h2>
-          ${parent ? `<p class="muted">${p.gender === 'female' ? 'Daughter' : p.gender === 'male' ? 'Son' : 'Child'} of ${esc(parent.full_name)}</p>` : '<p class="muted">Top ancestor</p>'}
+          <p class="muted">${esc(subtitle)}</p>
         </div>
       </div>
       <div class="detail-actions">
         ${canEdit(p) ? `<button class="btn primary" data-action="edit" data-id="${p.id}">✎ Edit details</button>` : ''}
         ${canContribute() ? `<button class="btn" data-action="add-child" data-id="${p.id}">＋ Add child</button>` : ''}
+        ${canContribute() && !spouse ? `<button class="btn" data-action="add-spouse" data-id="${p.id}">＋ Add spouse</button>` : ''}
         <button class="btn ghost" data-action="show-in-tree" data-id="${p.id}">Show in tree</button>
       </div>
       ${path.length > 1 ? `<nav class="crumbs" aria-label="Ancestry">${path.map((a, i) => (i === path.length - 1
         ? `<span>${esc(a.full_name)}</span>`
-        : `<button class="link" data-action="open" data-id="${a.id}">${esc(a.full_name)}</button><span class="sep">›</span>`)).join('')}</nav>` : ''}
+        : `<button class="link" data-action="open" data-id="${a.id}">${esc(a.full_name)}</button><span class="sep">${isSpouse(path[i + 1]) ? '⚭' : '›'}</span>`)).join('')}</nav>` : ''}
       ${rows.length ? `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
       ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
-      ${kids.length ? `<h3>Children</h3><div class="chips">${kids.map((k) => `<button class="chip" data-action="open" data-id="${k.id}">${avatar(k, 'xs')}${esc(k.full_name)}</button>`).join('')}</div>` : ''}
+      ${partners.length ? `<h3>${partnerHeading}</h3>${chipList(partners)}` : ''}
+      ${kids.length ? `<h3>Children</h3>${chipList(kids)}` : ''}
       ${canEditAll() && !kids.length ? `<div class="danger-zone"><button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete ${esc(p.full_name)}</button></div>` : ''}`;
     if (!$modal.open) $modal.showModal();
     $modal.scrollTop = 0;
@@ -456,7 +677,7 @@
   function parentOptions(excluded, selected, filter = '') {
     const f = filter.trim().toLowerCase();
     const items = state.persons
-      .filter((p) => !excluded.has(p.id))
+      .filter((p) => !excluded.has(p.id) && !isSpouse(p))
       .map((p) => ({ id: p.id, label: lineage(p).map((a) => a.full_name).join(' › '), name: p.full_name }))
       .sort((a, b) => a.label.localeCompare(b.label));
     const shown = items.filter((i) => !f || i.name.toLowerCase().includes(f) || i.id === selected);
@@ -464,26 +685,63 @@
     return rootOpt + shown.map((i) => `<option value="${i.id}" ${i.id === selected ? 'selected' : ''}>${esc(i.label)}</option>`).join('');
   }
 
-  function renderForm({ editId, parentId } = {}) {
+  function otherParentOptions(parentId, selected) {
+    const sp = parentId ? spousesOf(parentId) : [];
+    return `<option value="">— Not recorded —</option>${sp.map((s) => `
+      <option value="${s.id}" ${s.id === selected ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}`;
+  }
+
+  function updateOtherParent(preselect) {
+    const sel = document.getElementById('parent-select');
+    const wrap = document.getElementById('other-wrap');
+    if (!sel || !wrap) return;
+    const sp = sel.value ? spousesOf(sel.value) : [];
+    wrap.hidden = !sp.length;
+    const current = document.getElementById('other-select').value;
+    const pick = preselect !== undefined ? preselect : (sp.some((x) => x.id === current) ? current : (sp.length === 1 ? sp[0].id : null));
+    document.getElementById('other-select').innerHTML = otherParentOptions(sel.value, pick);
+  }
+
+  function renderForm({ editId, parentId, otherParentId, spouseOf } = {}) {
     const main = document.getElementById('main');
     const p = editId ? state.byId.get(editId) : null;
+    const partner = state.byId.get(spouseOf || p?.spouse_of);
+    const spouseMode = !!partner;
     const excluded = p ? new Set([p.id, ...descendants(p.id)]) : new Set();
     const selected = p ? p.parent_id : parentId || null;
+    const parentForOther = p ? p.parent_id : parentId;
+    const otherPick = p ? p.other_parent_id : (otherParentId
+      || (parentForOther && spousesOf(parentForOther).length === 1 ? spousesOf(parentForOther)[0].id : null));
+    const defaultGender = spouseMode && !p ? ({ male: 'female', female: 'male' }[partner.gender] || '') : p?.gender;
     const me = myPerson();
     const canClaim = !me || (p && me.id === p.id);
     const photo = p?.photo_path && state.photos.get(p.photo_path);
     const v = (k) => esc(p?.[k] ?? '');
     main.innerHTML = `
       <section class="panel form-panel">
-        <h2>${p ? `Edit ${esc(p.full_name)}` : 'Add a family member'}</h2>
-        <form id="person-form" class="stack" data-edit-id="${p ? p.id : ''}">
+        <h2>${p ? `Edit ${esc(p.full_name)}` : spouseMode ? `Add ${esc(partner.full_name)}'s spouse` : 'Add a family member'}</h2>
+        <form id="person-form" class="stack" data-edit-id="${p ? p.id : ''}" data-spouse-of="${spouseMode ? partner.id : ''}">
+          ${spouseMode ? `
+          <fieldset>
+            <legend>Married to</legend>
+            <div class="match">
+              ${avatar(partner)}
+              <div class="match-text"><div class="name">${esc(partner.full_name)}</div>
+                <div class="muted small">${esc(pathLabel(partner))}</div></div>
+            </div>
+            <p class="muted small">They'll appear side by side in the family chart, with lines from both down to their children.</p>
+          </fieldset>` : `
           <fieldset>
             <legend>Place in the family</legend>
-            <p class="muted small">Choose this person's father or mother. Ancestors are shown in order, from the oldest.</p>
+            <p class="muted small">Choose this person's father or mother from the family line. Ancestors are shown in order, from the oldest.</p>
             <input id="parent-filter" type="search" placeholder="Type a name to narrow the list…" aria-label="Filter parents">
             <label class="sr">Parent<select name="parent_id" id="parent-select" ${canEditAll() ? '' : 'required'}>${parentOptions(excluded, selected)}</select></label>
             <div id="parent-preview" class="path-preview"></div>
-          </fieldset>
+            <label id="other-wrap" hidden>Other parent (their husband or wife)
+              <select name="other_parent_id" id="other-select">${otherParentOptions(parentForOther, otherPick)}</select>
+              <small class="muted">Add a spouse from the parent's pop-up if they aren't listed.</small>
+            </label>
+          </fieldset>`}
 
           <fieldset>
             <legend>Personal details</legend>
@@ -492,7 +750,7 @@
               <label>Gender
                 <select name="gender">
                   <option value="">—</option>
-                  ${['male', 'female', 'other'].map((g) => `<option value="${g}" ${p?.gender === g ? 'selected' : ''}>${g[0].toUpperCase() + g.slice(1)}</option>`).join('')}
+                  ${['male', 'female', 'other'].map((g) => `<option value="${g}" ${defaultGender === g ? 'selected' : ''}>${g[0].toUpperCase() + g.slice(1)}</option>`).join('')}
                 </select>
               </label>
               <label>Date of birth<input name="birth_date" type="date" value="${v('birth_date')}"></label>
@@ -501,7 +759,6 @@
               <label>Place of birth<input name="birth_place" value="${v('birth_place')}"></label>
               <label>Lives in<input name="current_address" value="${v('current_address')}" placeholder="City, country"></label>
               <label>Occupation<input name="occupation" value="${v('occupation')}"></label>
-              <label>Spouse's name<input name="spouse_name" value="${v('spouse_name')}"></label>
               <label>Phone<input name="phone" type="tel" value="${v('phone')}"></label>
               <label>Email<input name="email" type="email" value="${v('email')}"></label>
               <label class="span2">About<textarea name="bio" rows="4" placeholder="Stories, achievements, memories…">${v('bio')}</textarea></label>
@@ -530,6 +787,7 @@
         </form>
       </section>`;
     updateParentPreview();
+    updateOtherParent(otherPick);
   }
 
   function updateParentPreview() {
@@ -549,8 +807,11 @@
     const existing = editId ? state.byId.get(editId) : null;
     const str = (k) => (fd.get(k) || '').toString().trim() || null;
     const isLiving = fd.get('is_living') === 'on';
+    const spouseOf = form.dataset.spouseOf || null;
     const rec = {
-      parent_id: str('parent_id'),
+      parent_id: spouseOf ? null : str('parent_id'),
+      other_parent_id: spouseOf ? null : str('other_parent_id'),
+      spouse_of: spouseOf,
       full_name: str('full_name'),
       gender: str('gender'),
       birth_date: str('birth_date'),
@@ -559,13 +820,13 @@
       birth_place: str('birth_place'),
       current_address: str('current_address'),
       occupation: str('occupation'),
-      spouse_name: str('spouse_name'),
       phone: str('phone'),
       email: str('email'),
       bio: str('bio'),
     };
     if (!rec.full_name) return toast('Please enter a name.', 'error');
-    if (!rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast('Please choose a parent.', 'error');
+    if (!spouseOf && !rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast('Please choose a parent.', 'error');
+    if (rec.other_parent_id && !spousesOf(rec.parent_id).some((x) => x.id === rec.other_parent_id)) rec.other_parent_id = null;
 
     if (form.querySelector('[name=is_me]')) {
       if (fd.get('is_me') === 'on') rec.user_id = uid();
@@ -613,7 +874,9 @@
 
   async function deletePerson(id) {
     const p = state.byId.get(id);
-    if (!p || !confirm(`Delete ${p.full_name} from the family tree? This cannot be undone.`)) return;
+    const sp = spousesOf(id);
+    const also = sp.length ? `\n\nTheir ${sp.length === 1 ? 'spouse' : 'spouses'} (${sp.map((x) => x.full_name).join(', ')}) will be deleted too.` : '';
+    if (!p || !confirm(`Delete ${p.full_name} from the family tree? This cannot be undone.${also}`)) return;
     const { error } = await sb.from('persons').delete().eq('id', id);
     if (error) return toast(friendlyError(error), 'error');
     if (p.photo_path) sb.storage.from(PHOTO_BUCKET).remove([p.photo_path]);
@@ -663,14 +926,14 @@
   }
 
   function matchCard(p, action, buttonLabel) {
-    const path = lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ');
-    const kids = (state.kids.get(p.id) || []).map((k) => k.full_name);
+    const path = isSpouse(p) ? '' : lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ');
+    const kids = childrenOf(p).map((k) => k.full_name);
     return `
       <div class="match">
         ${avatar(p)}
         <div class="match-text">
           <div class="name">${esc(p.full_name)} <span class="muted small">${esc(lifespan(p))}</span></div>
-          <div class="muted small">${path ? `Descendant of ${esc(path)}` : 'Top ancestor'}</div>
+          <div class="muted small">${isSpouse(p) ? esc(relationTo(p)) : path ? `Descendant of ${esc(path)}` : 'Top ancestor'}</div>
           ${kids.length ? `<div class="muted small">Parent of ${esc(kids.join(', '))}</div>` : ''}
         </div>
         <button class="btn primary sm" data-action="${action}" data-id="${p.id}">${buttonLabel}</button>
@@ -740,7 +1003,10 @@
         <h2>Check your line</h2>
         <p class="muted">This is how you'll appear in the family tree. ${fresh.length ? `${fresh.length} new ${fresh.length === 1 ? 'person' : 'people'} will be added along with you.` : ''}</p>
         <ol class="wiz-path">
-          ${existing.map((a) => `<li class="old">${esc(a.full_name)}<span class="tag">in tree</span></li>`).join('')}
+          ${existing.map((a, i) => {
+            const other = i === existing.length - 1 && w.anchorOther && state.byId.get(w.anchorOther);
+            return `<li class="old">${esc(a.full_name)}${other ? ` ⚭ ${esc(other.full_name)}` : ''}<span class="tag">in tree</span></li>`;
+          }).join('')}
           ${fresh.map((a) => `<li class="new">${esc(a.full_name)}<span class="tag">new</span></li>`).join('')}
           <li class="you">${esc(w.me.full_name)}<span class="tag">you</span></li>
         </ol>
@@ -787,11 +1053,13 @@
     btn.textContent = 'Adding…';
     try {
       let parentId = w.anchorId;
+      let otherId = w.anchorOther || null;
       for (const a of [...w.chain].reverse()) {
         const { data, error } = await sb.from('persons')
-          .insert({ ...a, parent_id: parentId, created_by: uid() }).select('id').single();
+          .insert({ ...a, parent_id: parentId, other_parent_id: otherId, created_by: uid() }).select('id').single();
         if (error) throw error;
         parentId = data.id;
+        otherId = null;
       }
       const me = { ...w.me };
       const photo = me.photo;
@@ -805,7 +1073,7 @@
         me.photo_path = path;
       }
       const { data, error } = await sb.from('persons')
-        .insert({ ...me, is_living: true, parent_id: parentId, user_id: uid(), created_by: uid() }).select('id').single();
+        .insert({ ...me, is_living: true, parent_id: parentId, other_parent_id: otherId, user_id: uid(), created_by: uid() }).select('id').single();
       if (error) throw error;
       state.wiz = null;
       await loadPersons();
@@ -996,7 +1264,19 @@
         if (state.view !== 'tree') setView('tree');
         reveal(id);
         break;
-      case 'add-child': $modal.close(); setView('form', { parentId: id }); break;
+      case 'add-child': {
+        const p = state.byId.get(id);
+        $modal.close();
+        setView('form', isSpouse(p) ? { parentId: p.spouse_of, otherParentId: p.id } : { parentId: id });
+        break;
+      }
+      case 'add-spouse': $modal.close(); setView('form', { spouseOf: id }); break;
+      case 'tree-mode':
+        state.treeMode = el.dataset.mode;
+        try { localStorage.setItem('treeMode', state.treeMode); } catch { /* private mode */ }
+        renderTree();
+        break;
+      case 'zoom': setZoom(Number(el.dataset.dir)); break;
       case 'edit': $modal.close(); setView('form', { editId: id }); break;
       case 'delete': deletePerson(id); break;
       case 'member': memberOp(id, el.dataset.op); break;
@@ -1007,10 +1287,19 @@
       case 'wiz-claim':
         if (confirm(`Link your account to ${state.byId.get(id)?.full_name}? Only do this if it is really you.`)) claimPerson(id);
         break;
-      case 'wiz-pick': state.wiz.anchorId = id; state.wiz.step = 'review'; renderConnect(); window.scrollTo(0, 0); break;
+      case 'wiz-pick': {
+        // Picking a spouse (e.g. your mother who married in) connects you through their partner.
+        const picked = state.byId.get(id);
+        state.wiz.anchorId = isSpouse(picked) ? picked.spouse_of : id;
+        state.wiz.anchorOther = isSpouse(picked) ? picked.id : (spousesOf(id).length === 1 ? spousesOf(id)[0].id : null);
+        state.wiz.step = 'review';
+        renderConnect();
+        window.scrollTo(0, 0);
+        break;
+      }
       case 'wiz-back': {
         const w = state.wiz;
-        if (w.step === 'review') { w.anchorId = null; w.step = 'ancestor'; w.query = ''; }
+        if (w.step === 'review') { w.anchorId = null; w.anchorOther = null; w.step = 'ancestor'; w.query = ''; }
         else if (w.chain.length) { w.query = w.chain.pop().full_name; }
         else w.step = 'me';
         renderConnect();
@@ -1038,11 +1327,12 @@
       const excluded = editId ? new Set([editId, ...descendants(editId)]) : new Set();
       sel.innerHTML = parentOptions(excluded, sel.value || null, e.target.value);
       updateParentPreview();
+      updateOtherParent();
     }
   });
 
   document.addEventListener('change', (e) => {
-    if (e.target.id === 'parent-select') updateParentPreview();
+    if (e.target.id === 'parent-select') { updateParentPreview(); updateOtherParent(); }
     if (e.target.dataset.roleFor) {
       const m = state.members.find((x) => x.id === e.target.dataset.roleFor);
       const label = ROLES[e.target.value].label;

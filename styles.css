@@ -13,6 +13,10 @@
   --bad: #b3261e;
   --shadow: 0 1px 2px rgba(60, 40, 20, .06), 0 4px 16px rgba(60, 40, 20, .06);
   --radius: 14px;
+  --link: #a8957d;
+  --male: #3f6f9f;
+  --female: #b04a6b;
+  --chart-bg: #f2ebdf;
   --serif: 'Fraunces', Georgia, serif;
   --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color-scheme: light;
@@ -32,6 +36,10 @@
     --ok: #6cc28f;
     --bad: #ff8a80;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 16px rgba(0, 0, 0, .25);
+    --link: #7d6f60;
+    --male: #7fa8d6;
+    --female: #e08aa6;
+    --chart-bg: #1f1b17;
     color-scheme: dark;
   }
 }
@@ -382,4 +390,70 @@ label.inline { display: inline-flex; align-items: center; gap: .4rem; font-size:
   .detail-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .detail-actions .btn.primary { grid-column: 1 / -1; padding: .75rem; font-size: .95rem; }
   .detail-head .photo { width: 72px; height: 72px; }
+}
+
+/* ---------- family chart (couples side by side, arrows down to children) */
+.tree-bar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin: 1rem 0 .75rem; }
+.tree-bar .stats { margin: 0; flex: 1; }
+.seg.two-way { display: inline-grid; grid-template-columns: auto auto; margin: 0; }
+.seg.two-way button { padding: .4rem .85rem; }
+.btn.icon { width: 34px; padding-left: 0; padding-right: 0; font-size: 1.05rem; }
+
+.chart-wrap {
+  overflow: auto; height: min(72vh, 820px); min-height: 360px;
+  background: var(--chart-bg); border: 1px solid var(--line); border-radius: var(--radius);
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+}
+.chart-sizer { position: relative; margin: 0 auto; }
+.chart { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 28px 40px 48px; width: max-content; }
+.chart .links { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
+.chart .links path { fill: none; stroke: var(--link); stroke-width: 2; stroke-linejoin: round; }
+.chart .links marker path { fill: var(--link); stroke: none; }
+.chart ul { list-style: none; margin: 0; padding: 56px 0 0; display: flex; justify-content: center; align-items: flex-start; gap: 36px; }
+.chart > ul { padding-top: 0; }
+.chart li { display: flex; flex-direction: column; align-items: center; }
+.unit { display: flex; align-items: center; position: relative; z-index: 1; }
+.wed { width: 30px; display: flex; align-items: center; justify-content: center; position: relative; }
+.wed::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 2px solid var(--link); }
+.wed i { position: relative; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--link); background: var(--chart-bg); }
+
+.pcard {
+  width: 150px; display: flex; flex-direction: column; align-items: center; gap: .15rem; text-align: center;
+  padding: .75rem .55rem .6rem; background: var(--surface); color: inherit; font: inherit; cursor: pointer;
+  border: 1px solid var(--line); border-top: 4px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  transition: transform .15s, border-color .15s;
+}
+.pcard:hover { transform: translateY(-2px); border-color: var(--accent); }
+.pcard.male { border-top-color: var(--male); }
+.pcard.female { border-top-color: var(--female); }
+.pcard.me { outline: 3px solid var(--accent); outline-offset: 2px; }
+.pcard.late .avatar { filter: grayscale(.6); }
+.pcard.flash { animation: flash 2s ease-out; }
+.pcard .avatar.lg { width: 58px; height: 58px; font-size: 1.05rem; margin-bottom: .25rem; }
+.pc-name { font-weight: 600; font-size: .88rem; line-height: 1.2; overflow-wrap: anywhere; }
+.pc-meta { font-size: .74rem; color: var(--muted); }
+.pc-tag { font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.pc-tag b { color: var(--accent); }
+
+.kids-toggle {
+  position: relative; z-index: 1; margin-top: 7px; min-width: 40px; height: 24px; padding: 0 .55rem;
+  border-radius: 99px; border: 1.5px solid var(--link); background: var(--surface);
+  color: var(--muted); font: 600 .75rem var(--sans); cursor: pointer;
+}
+.kids-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+/* list view: spouse beside the person */
+.node-spouses { display: flex; flex-wrap: wrap; gap: .35rem; margin: .35rem 0 0 28px; }
+.spouse-chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .3rem .7rem .3rem .4rem; border: 1px dashed var(--line); border-radius: 99px;
+  background: var(--surface); color: inherit; font: inherit; font-size: .82rem; cursor: pointer;
+}
+.spouse-chip:hover { border-color: var(--accent); }
+.spouse-chip .ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--link); }
+.spouse-chip.flash { animation: flash 2s ease-out; }
+
+@media (max-width: 560px) {
+  .tree-bar .stats { flex-basis: 100%; order: 3; }
+  .chart-wrap { height: 70vh; }
 }

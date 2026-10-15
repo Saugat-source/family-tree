@@ -110,7 +110,9 @@ create trigger profiles_guard
 -- ---------------------------------------------------------------------
 create table public.persons (
   id              uuid primary key default gen_random_uuid(),
-  parent_id       uuid references public.persons (id) on delete restrict,
+  parent_id       uuid references public.persons (id) on delete restrict,       -- parent in the family line
+  other_parent_id uuid references public.persons (id) on delete set null,      -- the parent's spouse (mother or father)
+  spouse_of       uuid references public.persons (id) on delete cascade,       -- set for someone who married into the family
   full_name       text not null check (length(trim(full_name)) > 0),
   gender          text check (gender in ('male', 'female', 'other')),
   birth_date      date,
@@ -128,10 +130,13 @@ create table public.persons (
   created_by      uuid references auth.users (id) on delete set null,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now(),
-  constraint not_own_parent check (parent_id is null or parent_id <> id)
+  constraint not_own_parent check (parent_id is null or parent_id <> id),
+  constraint not_own_spouse check (spouse_of is null or spouse_of <> id),
+  constraint spouse_not_in_line check (spouse_of is null or parent_id is null)
 );
 
 create index persons_parent_idx on public.persons (parent_id);
+create index persons_spouse_idx on public.persons (spouse_of);
 -- One member account can be linked to only one person in the tree.
 create unique index persons_user_idx on public.persons (user_id) where user_id is not null;
 
@@ -195,9 +200,12 @@ create policy "admin deletes profiles" on public.profiles
 -- Every approved member (any role) can see the tree.
 create policy "approved members read tree" on public.persons
   for select using (public.is_approved());
--- Admins, editors and members can add people; only admins and editors add new top ancestors.
+-- Admins, editors and members can add children and spouses; only admins and editors add new top ancestors.
 create policy "contributors add people" on public.persons
-  for insert with check (public.can_contribute() and (parent_id is not null or public.can_edit_all()));
+  for insert with check (
+    public.can_contribute()
+    and (parent_id is not null or spouse_of is not null or public.can_edit_all())
+  );
 -- Admins and editors edit anyone; members edit the people they added and themselves.
 create policy "edit entries" on public.persons
   for update
