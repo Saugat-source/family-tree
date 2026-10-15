@@ -216,3 +216,30 @@ begin
     values (santa, 'Saugat Shrestha', 'male');
 end;
 $$;
+
+-- ---------------------------------------------------------------------
+-- 6. "This is me": an approved member links their account to an entry
+--    someone else added (used by the Connect me guide).
+-- ---------------------------------------------------------------------
+create or replace function public.claim_person(target uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_approved() then
+    raise exception 'Your account is not approved yet';
+  end if;
+  if exists (select 1 from public.persons where user_id = auth.uid()) then
+    raise exception 'Your account is already linked to someone in the tree';
+  end if;
+  update public.persons set user_id = auth.uid() where id = target and user_id is null;
+  if not found then
+    raise exception 'This person is already linked to another member';
+  end if;
+end;
+$$;
+
+revoke execute on function public.claim_person(uuid) from public, anon;
+grant execute on function public.claim_person(uuid) to authenticated;

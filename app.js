@@ -268,8 +268,10 @@
 
   function renderApp() {
     const p = state.profile;
+    if (state.view === 'connect' && myPerson()) state.view = 'tree';
     const nav = [
       ['tree', 'Family tree'],
+      ...(myPerson() ? [] : [['connect', 'Connect me']]),
       ['form', 'Add person'],
       ...(isAdmin() ? [['admin', 'Members']] : []),
     ];
@@ -298,6 +300,7 @@
   function renderView(opts = {}) {
     if (state.view === 'admin') return renderAdmin();
     if (state.view === 'form') return renderForm(opts);
+    if (state.view === 'connect') return renderConnect();
     return renderTree();
   }
 
@@ -321,9 +324,9 @@
       </section>
       <p class="stats muted">${state.persons.length} ${state.persons.length === 1 ? 'person' : 'people'} · ${gens} ${gens === 1 ? 'generation' : 'generations'}</p>
       ${me ? '' : `<div class="callout">
-          <div><b>Add yourself to the tree.</b> Find your father or mother below, open them and press <b>Add child</b>.
-          If your parent isn't here yet, add the missing ancestors first, starting from the nearest one who is.</div>
-          <button class="btn primary sm" data-action="view" data-view="form">Add person</button>
+          <div><b>You're not in the tree yet.</b> Answer a few questions about yourself and your parents,
+          and we'll find where you connect to the family.</div>
+          <button class="btn primary sm" data-action="view" data-view="connect">Connect me to the tree</button>
         </div>`}
       <div class="tree" id="tree"></div>`;
     renderTreeBody();
@@ -611,6 +614,215 @@
     toast(`${p.full_name} was deleted.`, 'ok');
   }
 
+  // ---------------------------------------------------------------- guided "connect me" builder
+  // Asks for you, then your parent, grandparent… searching the tree at each step
+  // until it finds the ancestor you connect to. Nothing is saved until the review step.
+
+  const MAX_NEW_GENERATIONS = 8;
+
+  function startConnect() {
+    state.wiz = {
+      step: 'me',
+      me: { full_name: state.profile.full_name || '', gender: '', birth_date: '', birth_place: '', current_address: '', photo: null },
+      chain: [], // new ancestors not yet in the tree, nearest first
+      anchorId: null, // the existing person the chain hangs from
+      query: '',
+    };
+  }
+
+  const tokens = (s) => s.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+
+  function nameMatches(query, { unlinkedOnly = false } = {}) {
+    const q = tokens(query);
+    if (!q.length) return [];
+    return state.persons
+      .filter((p) => (!unlinkedOnly || !p.user_id) && q.every((t) => p.full_name.toLowerCase().includes(t)))
+      .slice(0, 12);
+  }
+
+  function chainBubbles() {
+    const w = state.wiz;
+    const anchor = w.anchorId && state.byId.get(w.anchorId);
+    const items = [
+      { label: w.me.full_name || 'You', cls: 'you' },
+      ...w.chain.map((a) => ({ label: a.full_name, cls: 'new' })),
+      anchor ? { label: anchor.full_name, cls: 'found' } : { label: '?', cls: 'unknown' },
+    ];
+    return `<ol class="wiz-chain" aria-label="Your line so far">${items.map((it) => `
+      <li class="${it.cls}"><span class="dot">${it.cls === 'unknown' ? '?' : esc(initials(it.label))}</span><span class="lbl">${esc(it.label)}</span></li>`).join('')}
+    </ol>`;
+  }
+
+  function matchCard(p, action, buttonLabel) {
+    const path = lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ');
+    const kids = (state.kids.get(p.id) || []).map((k) => k.full_name);
+    return `
+      <div class="match">
+        ${avatar(p)}
+        <div class="match-text">
+          <div class="name">${esc(p.full_name)} <span class="muted small">${esc(lifespan(p))}</span></div>
+          <div class="muted small">${path ? `Descendant of ${esc(path)}` : 'Top ancestor'}</div>
+          ${kids.length ? `<div class="muted small">Parent of ${esc(kids.join(', '))}</div>` : ''}
+        </div>
+        <button class="btn primary sm" data-action="${action}" data-id="${p.id}">${buttonLabel}</button>
+      </div>`;
+  }
+
+  function renderConnect() {
+    if (!state.wiz) startConnect();
+    const w = state.wiz;
+    const main = document.getElementById('main');
+    let body = '';
+
+    if (w.step === 'me') {
+      const m = w.me;
+      body = `
+        <h2>Let's connect you to the family tree</h2>
+        <p class="muted">First, tell us about yourself. Next we'll ask about your parents and look for them in the tree.</p>
+        <form id="wiz-me" class="stack">
+          <div class="grid">
+            <label class="span2">Your full name *<input name="full_name" id="wiz-me-name" required value="${esc(m.full_name)}"></label>
+            <label>Gender
+              <select name="gender"><option value="">—</option>
+                ${['male', 'female', 'other'].map((g) => `<option value="${g}" ${m.gender === g ? 'selected' : ''}>${g[0].toUpperCase() + g.slice(1)}</option>`).join('')}
+              </select></label>
+            <label>Date of birth<input name="birth_date" type="date" value="${esc(m.birth_date)}"></label>
+            <label>Place of birth<input name="birth_place" value="${esc(m.birth_place)}"></label>
+            <label>Lives in<input name="current_address" value="${esc(m.current_address)}" placeholder="City, country"></label>
+            <label class="span2">Your photo<input name="photo" type="file" accept="image/*">
+              ${m.photo ? `<small class="muted">Selected: ${esc(m.photo.name)}</small>` : ''}</label>
+          </div>
+          <div id="wiz-already"></div>
+          <div class="actions"><button class="btn primary" type="submit">Next: your parents</button></div>
+        </form>`;
+    } else if (w.step === 'ancestor') {
+      const i = w.chain.length;
+      const prev = i ? w.chain[i - 1].full_name : null;
+      const who = prev ? `${esc(prev)}'s` : 'your';
+      body = `
+        <p class="eyebrow">Step ${i + 2}</p>
+        <h2>Who is ${who} father or mother?</h2>
+        <p class="muted">Start typing their name. If they're already in the tree, choose them and you're connected.</p>
+        <input id="wiz-search" type="search" autocomplete="off" placeholder="Type a name, e.g. Santa Bahadur" value="${esc(w.query)}">
+        <div id="wiz-matches" class="matches"></div>
+        ${i < MAX_NEW_GENERATIONS ? `
+        <details class="wiz-new" ${w.query ? 'open' : ''}>
+          <summary>Not in the tree yet? Add them</summary>
+          <form id="wiz-new" class="stack">
+            <div class="seg two">
+              <label><input type="radio" name="relation" value="male" checked> Father</label>
+              <label><input type="radio" name="relation" value="female"> Mother</label>
+            </div>
+            <div class="grid">
+              <label class="span2">Full name *<input name="full_name" id="wiz-new-name" required value="${esc(w.query)}"></label>
+              <label>Date of birth<input name="birth_date" type="date"></label>
+              <label class="check"><input type="checkbox" name="is_living" checked> Living</label>
+            </div>
+            <div class="actions"><button class="btn" type="submit">Add, then ask about their parents</button></div>
+          </form>
+        </details>` : '<p class="muted">That\'s many generations. Ask a family admin to help connect the rest.</p>'}
+        <div class="actions spread"><button class="btn ghost" data-action="wiz-back">Back</button><span></span></div>`;
+    } else {
+      const anchor = state.byId.get(w.anchorId);
+      const existing = lineage(anchor);
+      const fresh = [...w.chain].reverse();
+      body = `
+        <p class="eyebrow">Last step</p>
+        <h2>Check your line</h2>
+        <p class="muted">This is how you'll appear in the family tree. ${fresh.length ? `${fresh.length} new ${fresh.length === 1 ? 'person' : 'people'} will be added along with you.` : ''}</p>
+        <ol class="wiz-path">
+          ${existing.map((a) => `<li class="old">${esc(a.full_name)}<span class="tag">in tree</span></li>`).join('')}
+          ${fresh.map((a) => `<li class="new">${esc(a.full_name)}<span class="tag">new</span></li>`).join('')}
+          <li class="you">${esc(w.me.full_name)}<span class="tag">you</span></li>
+        </ol>
+        <div class="actions spread">
+          <button class="btn ghost" data-action="wiz-back">Back</button>
+          <button class="btn primary" data-action="wiz-confirm">Add me to the family tree</button>
+        </div>`;
+    }
+
+    main.innerHTML = `<section class="panel wizard">${chainBubbles()}${body}</section>`;
+    if (w.step === 'me') updateAlreadyInTree(w.me.full_name);
+    if (w.step === 'ancestor') {
+      updateWizMatches();
+      const s = document.getElementById('wiz-search');
+      s.focus();
+      s.setSelectionRange(s.value.length, s.value.length);
+    }
+  }
+
+  function updateAlreadyInTree(name) {
+    const box = document.getElementById('wiz-already');
+    if (!box) return;
+    const hits = nameMatches(name, { unlinkedOnly: true });
+    box.innerHTML = hits.length
+      ? `<div class="callout plain"><div><b>Are you already in the tree?</b> Someone may have added you. If so, choose yourself.</div></div>
+         <div class="matches">${hits.map((p) => matchCard(p, 'wiz-claim', 'This is me')).join('')}</div>`
+      : '';
+  }
+
+  function updateWizMatches() {
+    const box = document.getElementById('wiz-matches');
+    if (!box) return;
+    const q = state.wiz.query;
+    if (tokens(q).length === 0) { box.innerHTML = ''; return; }
+    const hits = nameMatches(q);
+    box.innerHTML = hits.length
+      ? hits.map((p) => matchCard(p, 'wiz-pick', 'Yes, this is them')).join('')
+      : `<p class="muted small pad">No one called “${esc(q)}” in the tree yet. You can add them below.</p>`;
+  }
+
+  async function confirmConnect(btn) {
+    const w = state.wiz;
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    try {
+      let parentId = w.anchorId;
+      for (const a of [...w.chain].reverse()) {
+        const { data, error } = await sb.from('persons')
+          .insert({ ...a, parent_id: parentId, created_by: uid() }).select('id').single();
+        if (error) throw error;
+        parentId = data.id;
+      }
+      const me = { ...w.me };
+      const photo = me.photo;
+      delete me.photo;
+      for (const k of Object.keys(me)) if (me[k] === '') me[k] = null;
+      if (photo) {
+        const blob = await resizeImage(photo);
+        const path = `${uid()}/${crypto.randomUUID()}.jpg`;
+        const { error } = await sb.storage.from(PHOTO_BUCKET).upload(path, blob, { contentType: 'image/jpeg' });
+        if (error) throw error;
+        me.photo_path = path;
+      }
+      const { data, error } = await sb.from('persons')
+        .insert({ ...me, is_living: true, parent_id: parentId, user_id: uid(), created_by: uid() }).select('id').single();
+      if (error) throw error;
+      state.wiz = null;
+      await loadPersons();
+      state.view = 'tree';
+      renderApp();
+      reveal(data.id);
+      toast('Welcome to the family tree!', 'ok');
+    } catch (e) {
+      toast(friendlyError(e), 'error');
+      btn.disabled = false;
+      btn.textContent = 'Add me to the family tree';
+      await loadPersons(); // some ancestors may have been saved before the error
+    }
+  }
+
+  async function claimPerson(id) {
+    const { error } = await sb.rpc('claim_person', { target: id });
+    if (error) return toast(friendlyError(error), 'error');
+    state.wiz = null;
+    await loadPersons();
+    state.view = 'form';
+    renderApp();
+    renderForm({ editId: id });
+    toast('You are now linked to your place in the tree. Check your details and save.', 'ok');
+  }
+
   // ---------------------------------------------------------------- admin
 
   async function renderAdmin() {
@@ -712,12 +924,32 @@
       case 'edit': $modal.close(); setView('form', { editId: id }); break;
       case 'delete': deletePerson(id); break;
       case 'member': memberOp(id, el.dataset.op); break;
+      case 'wiz-claim':
+        if (confirm(`Link your account to ${state.byId.get(id)?.full_name}? Only do this if it is really you.`)) claimPerson(id);
+        break;
+      case 'wiz-pick': state.wiz.anchorId = id; state.wiz.step = 'review'; renderConnect(); window.scrollTo(0, 0); break;
+      case 'wiz-back': {
+        const w = state.wiz;
+        if (w.step === 'review') { w.anchorId = null; w.step = 'ancestor'; w.query = ''; }
+        else if (w.chain.length) { w.query = w.chain.pop().full_name; }
+        else w.step = 'me';
+        renderConnect();
+        break;
+      }
+      case 'wiz-confirm': confirmConnect(el); break;
       default: break;
     }
   });
 
   document.addEventListener('input', (e) => {
     if (e.target.id === 'search') updateSearch(e.target.value);
+    if (e.target.id === 'wiz-me-name') updateAlreadyInTree(e.target.value);
+    if (e.target.id === 'wiz-search') {
+      state.wiz.query = e.target.value;
+      updateWizMatches();
+      const nm = document.getElementById('wiz-new-name');
+      if (nm) nm.value = e.target.value;
+    }
     if (e.target.id === 'parent-filter') {
       const sel = document.getElementById('parent-select');
       const form = document.getElementById('person-form');
@@ -798,6 +1030,37 @@
       case 'person-form':
         await savePerson(form);
         break;
+      case 'wiz-me': {
+        const w = state.wiz;
+        const file = fd.get('photo');
+        w.me = {
+          full_name: fd.get('full_name').trim(),
+          gender: fd.get('gender'),
+          birth_date: fd.get('birth_date'),
+          birth_place: fd.get('birth_place').trim(),
+          current_address: fd.get('current_address').trim(),
+          photo: file && file.size ? file : w.me.photo,
+        };
+        w.step = 'ancestor';
+        w.query = '';
+        renderConnect();
+        window.scrollTo(0, 0);
+        break;
+      }
+      case 'wiz-new': {
+        const w = state.wiz;
+        const living = fd.get('is_living') === 'on';
+        w.chain.push({
+          full_name: fd.get('full_name').trim(),
+          gender: fd.get('relation'),
+          birth_date: fd.get('birth_date') || null,
+          is_living: living,
+        });
+        w.query = '';
+        renderConnect();
+        window.scrollTo(0, 0);
+        break;
+      }
       default: break;
     }
   });

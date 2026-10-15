@@ -292,3 +292,64 @@ legend { font: 650 1.02rem var(--serif); margin-bottom: .5rem; padding: 0; }
 .toast.error { background: var(--bad); color: #fff; }
 .toast.ok { background: var(--ok); color: #fff; }
 @keyframes up { from { transform: translateY(8px); opacity: 0; } }
+
+/* ---------- guided "connect me" builder */
+.wizard { max-width: 760px; margin: 0 auto; }
+.wiz-chain {
+  list-style: none; margin: 0 0 1.5rem; padding: 0 0 .5rem;
+  display: flex; gap: 0; overflow-x: auto;
+}
+.wiz-chain li {
+  position: relative; flex: 0 0 auto; width: 92px;
+  display: flex; flex-direction: column; align-items: center; gap: .35rem; text-align: center;
+}
+.wiz-chain li + li::before {
+  content: ""; position: absolute; top: 21px; right: 50%; width: 100%;
+  border-top: 2px solid var(--line); z-index: 0;
+}
+.wiz-chain .dot {
+  position: relative; z-index: 1; width: 44px; height: 44px; border-radius: 50%;
+  display: grid; place-items: center; font: 650 .9rem var(--serif);
+  background: var(--surface-2); color: var(--muted); border: 2px solid var(--line);
+}
+.wiz-chain .you .dot { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wiz-chain .new .dot { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.wiz-chain .found .dot { background: color-mix(in srgb, var(--ok) 18%, var(--surface)); border-color: var(--ok); color: var(--ok); }
+.wiz-chain .unknown .dot { border-style: dashed; }
+.wiz-chain .lbl { font-size: .75rem; line-height: 1.2; color: var(--muted); max-width: 88px; overflow-wrap: anywhere; }
+.wiz-chain .you .lbl { color: var(--text); font-weight: 600; }
+
+#wiz-search { font-size: 1.05rem; padding: .8rem 1rem; }
+.matches { display: flex; flex-direction: column; gap: .5rem; margin-top: .75rem; }
+.match {
+  display: flex; align-items: center; gap: .8rem; padding: .7rem .8rem;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
+.match-text { flex: 1; min-width: 0; }
+.match .name { font-weight: 600; }
+@media (max-width: 560px) {
+  .match { flex-wrap: wrap; }
+  .match .btn { width: 100%; }
+}
+.callout.plain { background: var(--surface-2); border-color: var(--line); margin: .25rem 0 0; }
+.wiz-new { margin-top: 1.25rem; border: 1px dashed var(--line); border-radius: 12px; padding: .8rem 1rem; }
+.wiz-new summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.wiz-new form { margin-top: .9rem; }
+.seg.two { display: inline-grid; grid-template-columns: auto auto; gap: 4px; margin: 0; }
+.seg.two label { display: flex; align-items: center; gap: .4rem; padding: .45rem .9rem; border-radius: 8px; cursor: pointer; font-weight: 600; }
+.seg.two label:has(input:checked) { background: var(--surface); box-shadow: var(--shadow); }
+.wiz-path { list-style: none; margin: 1rem 0; padding: 0; }
+.wiz-path li {
+  position: relative; display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+  padding: .6rem .9rem; margin-left: 14px; border-left: 2px solid var(--line);
+}
+.wiz-path li::before {
+  content: ""; position: absolute; left: -7px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--line);
+}
+.wiz-path .new { font-weight: 600; }
+.wiz-path .new::before { border-color: var(--accent); background: var(--accent-soft); }
+.wiz-path .you { font-weight: 700; color: var(--accent); }
+.wiz-path .you::before { background: var(--accent); border-color: var(--accent); }
+.wiz-path .tag { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.wiz-path .new .tag, .wiz-path .you .tag { color: var(--accent); }
