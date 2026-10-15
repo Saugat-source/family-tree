@@ -353,3 +353,24 @@ legend { font: 650 1.02rem var(--serif); margin-bottom: .5rem; padding: 0; }
 .wiz-path .you::before { background: var(--accent); border-color: var(--accent); }
 .wiz-path .tag { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .wiz-path .new .tag, .wiz-path .you .tag { color: var(--accent); }
+
+/* ---------- roles */
+.pill.role-admin { background: var(--accent); color: var(--accent-ink); }
+.pill.role-editor { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold); }
+.pill.role-member { background: var(--surface-2); color: var(--text); }
+.pill.role-viewer { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.role-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .75rem; }
+.role-card {
+  text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .8rem .9rem;
+}
+.role-card:hover { border-color: var(--accent); }
+.role-card.on { border: 2px solid var(--accent); background: var(--accent-soft); }
+.role-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: .4rem; }
+.role-head .pill { margin: 0; font-size: .75rem; padding: .15rem .6rem; }
+.role-card ul { margin: 0; padding-left: 1.1rem; font-size: .82rem; color: var(--muted); }
+.role-card li { margin: .1rem 0; }
+.member-tools { margin-bottom: 1rem; }
+.member-info { flex: 1 1 260px; min-width: 0; }
+.role-select { width: auto; margin: 0; padding: .4rem .6rem; font-size: .85rem; }
+label.inline { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; font-weight: 500; }

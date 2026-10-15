@@ -15,7 +15,12 @@ create table public.profiles (
   email       text,
   status      text not null default 'pending'
               check (status in ('pending', 'approved', 'rejected')),
-  is_admin    boolean not null default false,
+  -- admin:  everything, including approving members and changing roles
+  -- editor: add, edit and delete anyone in the tree
+  -- member: add people, edit the people they added and themselves
+  -- viewer: look only
+  role        text not null default 'member'
+              check (role in ('admin', 'editor', 'member', 'viewer')),
   created_at  timestamptz not null default now()
 );
 
@@ -51,7 +56,7 @@ as $$
   );
 $$;
 
-create or replace function public.is_admin()
+create or replace function public.has_role(roles text[])
 returns boolean
 language sql
 stable
@@ -60,9 +65,45 @@ set search_path = public
 as $$
   select exists (
     select 1 from public.profiles
-    where id = auth.uid() and status = 'approved' and is_admin
+    where id = auth.uid() and status = 'approved' and role = any (roles)
   );
 $$;
+
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public
+as $$ select public.has_role(array['admin']); $$;
+
+create or replace function public.can_edit_all()
+returns boolean language sql stable security definer set search_path = public
+as $$ select public.has_role(array['admin', 'editor']); $$;
+
+create or replace function public.can_contribute()
+returns boolean language sql stable security definer set search_path = public
+as $$ select public.has_role(array['admin', 'editor', 'member']); $$;
+
+-- Never let the last admin be demoted or removed, so nobody gets locked out.
+create or replace function public.profiles_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if old.role = 'admin' and old.status = 'approved'
+     and (tg_op = 'DELETE' or new.role <> 'admin' or new.status <> 'approved')
+     and not exists (
+       select 1 from public.profiles
+       where role = 'admin' and status = 'approved' and id <> old.id
+     ) then
+    raise exception 'There must always be at least one admin. Make someone else an admin first.';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+create trigger profiles_guard
+  before update or delete on public.profiles
+  for each row execute function public.profiles_guard();
 
 -- ---------------------------------------------------------------------
 -- 2. People in the family tree
@@ -139,31 +180,32 @@ alter table public.persons  enable row level security;
 grant usage on schema public to anon, authenticated;
 grant select, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.persons to authenticated;
-grant execute on function public.is_approved(), public.is_admin() to authenticated;
+grant execute on function public.is_approved(), public.is_admin(), public.can_edit_all(),
+  public.can_contribute(), public.has_role(text[]) to authenticated;
 
 -- Members see their own account; admins see everyone's.
 create policy "read own profile, admin reads all" on public.profiles
   for select using (id = auth.uid() or public.is_admin());
--- Only admins approve, reject or promote members.
+-- Only admins approve members and change roles.
 create policy "admin updates profiles" on public.profiles
   for update using (public.is_admin()) with check (public.is_admin());
 create policy "admin deletes profiles" on public.profiles
   for delete using (public.is_admin());
 
--- Only approved members can see the tree.
+-- Every approved member (any role) can see the tree.
 create policy "approved members read tree" on public.persons
   for select using (public.is_approved());
--- Approved members can add people.
-create policy "approved members add people" on public.persons
-  for insert with check (public.is_approved());
--- People can be edited by the member who added them, the member they belong to, or an admin.
-create policy "edit own entries" on public.persons
+-- Admins, editors and members can add people; only admins and editors add new top ancestors.
+create policy "contributors add people" on public.persons
+  for insert with check (public.can_contribute() and (parent_id is not null or public.can_edit_all()));
+-- Admins and editors edit anyone; members edit the people they added and themselves.
+create policy "edit entries" on public.persons
   for update
-  using (public.is_approved() and (public.is_admin() or created_by = auth.uid() or user_id = auth.uid()))
-  with check (public.is_approved());
--- Only admins delete people.
-create policy "admin deletes people" on public.persons
-  for delete using (public.is_admin());
+  using (public.can_edit_all() or (public.can_contribute() and (created_by = auth.uid() or user_id = auth.uid())))
+  with check (public.can_contribute());
+-- Admins and editors delete people.
+create policy "editors delete people" on public.persons
+  for delete using (public.can_edit_all());
 
 -- ---------------------------------------------------------------------
 -- 4. Photo storage (private: only approved members can view)
@@ -174,20 +216,20 @@ on conflict (id) do nothing;
 
 create policy "approved members view photos" on storage.objects
   for select using (bucket_id = 'photos' and public.is_approved());
-create policy "approved members upload own photos" on storage.objects
+create policy "contributors upload own photos" on storage.objects
   for insert with check (
-    bucket_id = 'photos' and public.is_approved()
+    bucket_id = 'photos' and public.can_contribute()
     and (storage.foldername(name))[1] = auth.uid()::text
   );
-create policy "members update own photos" on storage.objects
+create policy "update own photos, editors any" on storage.objects
   for update using (
     bucket_id = 'photos'
-    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.can_edit_all())
   );
-create policy "members delete own photos" on storage.objects
+create policy "delete own photos, editors any" on storage.objects
   for delete using (
     bucket_id = 'photos'
-    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.can_edit_all())
   );
 
 -- ---------------------------------------------------------------------
@@ -228,8 +270,8 @@ security definer
 set search_path = public
 as $$
 begin
-  if not public.is_approved() then
-    raise exception 'Your account is not approved yet';
+  if not public.can_contribute() then
+    raise exception 'Your account cannot add to the tree';
   end if;
   if exists (select 1 from public.persons where user_id = auth.uid()) then
     raise exception 'Your account is already linked to someone in the tree';

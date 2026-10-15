@@ -11,7 +11,8 @@ A private family tree website. Relatives sign up, an admin approves them, and ap
 |---|---|
 | `index.html`, `app.js`, `styles.css` | The website |
 | `config.js` | Your Supabase keys and the site title |
-| `supabase-schema.sql` | Creates the database, access rules, photo storage and the starting family line |
+| `supabase-schema.sql` | Creates the database, roles, access rules, photo storage and the starting family line |
+| `supabase-update-roles.sql` | Only for databases created before roles were added; new projects don't need it |
 
 ---
 
@@ -49,29 +50,36 @@ This makes the confirmation and password-reset emails link back to your site.
 2. In Supabase **SQL Editor**, run (with your email):
    ```sql
    update public.profiles
-   set status = 'approved', is_admin = true
+   set status = 'approved', role = 'admin'
    where email = 'your-email@example.com';
    ```
-3. Log in on the site. You'll see the **Members** tab.
+3. Log in on the site. You'll see the **Members & roles** tab.
 4. Open **Saugat Shrestha** in the tree → **Edit** → tick **This is me** → **Save**. That links the entry to your account.
 
-You only do step 6 once. After that you approve everyone from the **Members** tab, and you can make other trusted relatives admins there too.
+You only do step 6 once. After that you approve everyone from the **Members & roles** tab and choose each person's role there.
 
 ---
 
 ## How the family uses it
 
 1. A relative opens the site and clicks **Become a member**.
-2. You see them under **Members → Waiting for approval** and click **Approve** (or **Reject**).
-3. They log in, find their father or mother in the tree (or use search), open them and click **Add child**.
-4. They fill in their details and photo, tick **This is me**, and save.
-5. If their parent isn't in the tree yet (for example, someone from one of Gangaram's other three sons), they add the missing ancestors first, starting under the nearest person who is already there.
+2. You see them under **Members & roles → Waiting for approval**, choose their role and click **Approve** (or **Reject**).
+3. They log in and press **Connect me**. It asks about them, then their father or mother, searching the tree as they type.
+4. If a parent isn't in the tree yet (for example, someone from one of Gangaram's other three sons), they add them and are asked about the next generation up, until the guide finds a match.
+5. They check the line on the review screen and confirm. If they were already added by someone else, the guide offers **This is me** instead.
 
-**Who can do what**
-- Only approved members can see the tree and photos.
-- Any approved member can add people.
-- A person can be edited by whoever added them, by the member linked to them ("This is me"), or by an admin.
-- Only admins can delete people (and only people with no children), approve members, or add a new top ancestor.
+**Roles** (set by admins on the **Members & roles** page)
+
+| Role | Can do |
+|---|---|
+| **Admin** | Everything: approve members, change roles, add new top ancestors, edit and delete anyone |
+| **Editor** | Add people (including new top ancestors), edit and delete anyone in the tree |
+| **Member** | Add people, edit themselves and the people they added *(default for new members)* |
+| **Viewer** | See the tree only |
+
+- Only approved members can see the tree and photos, whatever their role.
+- People can only be deleted if they have no children in the tree.
+- There must always be at least one admin; the database refuses to remove the last one.
 
 ---
 

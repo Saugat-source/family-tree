@@ -43,9 +43,19 @@
   };
 
   const uid = () => state.session?.user?.id;
-  const isAdmin = () => !!state.profile?.is_admin;
+  // Roles, most powerful first. Kept in step with the database rules in supabase-schema.sql.
+  const ROLES = {
+    admin: { label: 'Admin', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone', 'Approve members and change roles'] },
+    editor: { label: 'Editor', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone'] },
+    member: { label: 'Member', can: ['See the whole tree', 'Add people', 'Edit themselves and people they added'] },
+    viewer: { label: 'Viewer', can: ['See the whole tree'] },
+  };
+  const role = () => state.profile?.role || 'member';
+  const isAdmin = () => role() === 'admin';
+  const canEditAll = () => role() === 'admin' || role() === 'editor';
+  const canContribute = () => role() !== 'viewer';
   const myPerson = () => state.persons.find((p) => p.user_id && p.user_id === uid());
-  const canEdit = (p) => isAdmin() || p.created_by === uid() || p.user_id === uid();
+  const canEdit = (p) => canEditAll() || (canContribute() && (p.created_by === uid() || p.user_id === uid()));
 
   // ---------------------------------------------------------------- helpers
 
@@ -268,12 +278,14 @@
 
   function renderApp() {
     const p = state.profile;
-    if (state.view === 'connect' && myPerson()) state.view = 'tree';
+    if ((state.view === 'connect' && (myPerson() || !canContribute()))
+      || (state.view === 'form' && !canContribute())
+      || (state.view === 'admin' && !isAdmin())) state.view = 'tree';
     const nav = [
       ['tree', 'Family tree'],
-      ...(myPerson() ? [] : [['connect', 'Connect me']]),
-      ['form', 'Add person'],
-      ...(isAdmin() ? [['admin', 'Members']] : []),
+      ...(myPerson() || !canContribute() ? [] : [['connect', 'Connect me']]),
+      ...(canContribute() ? [['form', 'Add person']] : []),
+      ...(isAdmin() ? [['admin', 'Members & roles']] : []),
     ];
     $app.innerHTML = `
       <header class="topbar">
@@ -282,7 +294,7 @@
           ${nav.map(([v, label]) => `<button class="${state.view === v ? 'on' : ''}" data-action="view" data-view="${v}">${label}</button>`).join('')}
         </nav>
         <div class="who">
-          <span class="who-name">${esc(p.full_name || p.email)}${isAdmin() ? ' <span class="pill tiny">Admin</span>' : ''}</span>
+          <span class="who-name">${esc(p.full_name || p.email)} <span class="pill tiny role-${role()}">${ROLES[role()].label}</span></span>
           <button class="btn ghost sm" data-action="logout">Log out</button>
         </div>
       </header>
@@ -323,7 +335,7 @@
         </div>
       </section>
       <p class="stats muted">${state.persons.length} ${state.persons.length === 1 ? 'person' : 'people'} · ${gens} ${gens === 1 ? 'generation' : 'generations'}</p>
-      ${me ? '' : `<div class="callout">
+      ${me || !canContribute() ? '' : `<div class="callout">
           <div><b>You're not in the tree yet.</b> Answer a few questions about yourself and your parents,
           and we'll find where you connect to the family.</div>
           <button class="btn primary sm" data-action="view" data-view="connect">Connect me to the tree</button>
@@ -430,12 +442,12 @@
       ${kids.length ? `<h3>Children</h3><div class="chips">${kids.map((k) => `<button class="chip" data-action="open" data-id="${k.id}">${avatar(k, 'xs')}${esc(k.full_name)}</button>`).join('')}</div>` : ''}
       <div class="actions spread">
         <div>
-          ${isAdmin() && !kids.length ? `<button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete</button>` : ''}
+          ${canEditAll() && !kids.length ? `<button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete</button>` : ''}
         </div>
         <div class="actions">
           <button class="btn ghost sm" data-action="show-in-tree" data-id="${p.id}">Show in tree</button>
           ${canEdit(p) ? `<button class="btn sm" data-action="edit" data-id="${p.id}">Edit</button>` : ''}
-          <button class="btn primary sm" data-action="add-child" data-id="${p.id}">Add child</button>
+          ${canContribute() ? `<button class="btn primary sm" data-action="add-child" data-id="${p.id}">Add child</button>` : ''}
         </div>
       </div>`;
     if (!$modal.open) $modal.showModal();
@@ -451,7 +463,7 @@
       .map((p) => ({ id: p.id, label: lineage(p).map((a) => a.full_name).join(' › '), name: p.full_name }))
       .sort((a, b) => a.label.localeCompare(b.label));
     const shown = items.filter((i) => !f || i.name.toLowerCase().includes(f) || i.id === selected);
-    const rootOpt = isAdmin() ? `<option value="" ${!selected ? 'selected' : ''}>— None (a new top ancestor) —</option>` : '<option value="" disabled ' + (!selected ? 'selected' : '') + '>— Choose the parent —</option>';
+    const rootOpt = canEditAll() ? `<option value="" ${!selected ? 'selected' : ''}>— None (a new top ancestor) —</option>` : '<option value="" disabled ' + (!selected ? 'selected' : '') + '>— Choose the parent —</option>';
     return rootOpt + shown.map((i) => `<option value="${i.id}" ${i.id === selected ? 'selected' : ''}>${esc(i.label)}</option>`).join('');
   }
 
@@ -472,7 +484,7 @@
             <legend>Place in the family</legend>
             <p class="muted small">Choose this person's father or mother. Ancestors are shown in order, from the oldest.</p>
             <input id="parent-filter" type="search" placeholder="Type a name to narrow the list…" aria-label="Filter parents">
-            <label class="sr">Parent<select name="parent_id" id="parent-select" ${isAdmin() ? '' : 'required'}>${parentOptions(excluded, selected)}</select></label>
+            <label class="sr">Parent<select name="parent_id" id="parent-select" ${canEditAll() ? '' : 'required'}>${parentOptions(excluded, selected)}</select></label>
             <div id="parent-preview" class="path-preview"></div>
           </fieldset>
 
@@ -530,7 +542,7 @@
     const parent = state.byId.get(sel.value);
     out.innerHTML = parent
       ? `${lineage(parent).map((a) => `<span>${esc(a.full_name)}</span>`).join('<span class="sep">›</span>')}<span class="sep">›</span><span class="new">this person</span>`
-      : (isAdmin() ? '<span class="muted">Will be added as a new top ancestor.</span>' : '');
+      : (canEditAll() ? '<span class="muted">Will be added as a new top ancestor.</span>' : '');
   }
 
   async function savePerson(form) {
@@ -556,7 +568,7 @@
       bio: str('bio'),
     };
     if (!rec.full_name) return toast('Please enter a name.', 'error');
-    if (!rec.parent_id && !isAdmin() && !(existing && !existing.parent_id)) return toast('Please choose a parent.', 'error');
+    if (!rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast('Please choose a parent.', 'error');
 
     if (form.querySelector('[name=is_me]')) {
       if (fd.get('is_me') === 'on') rec.user_id = uid();
@@ -831,29 +843,71 @@
     const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
     if (state.view !== 'admin') return;
     if (error) { main.innerHTML = `<p class="muted">${esc(error.message)}</p>`; return; }
+    state.members = data;
+    state.memberFilter ||= { q: '', role: 'all' };
+    main.innerHTML = `
+      <section class="panel">
+        <h2>Roles</h2>
+        <p class="muted small">Every approved member has one role. Change someone's role from the list below.</p>
+        <div class="role-grid" id="role-grid"></div>
+      </section>
+      <div id="member-lists"></div>`;
+    renderMemberLists();
+  }
+
+  function roleSelect(m, attrs = '') {
+    const current = m.role || 'member';
+    return `<select class="role-select" aria-label="Role for ${esc(m.full_name || m.email)}" ${attrs}>
+      ${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${k === current ? 'selected' : ''}>${r.label}</option>`).join('')}
+    </select>`;
+  }
+
+  function renderMemberLists() {
+    const all = state.members || [];
+    const f = state.memberFilter;
+    const approved = all.filter((m) => m.status === 'approved');
+    document.getElementById('role-grid').innerHTML = Object.entries(ROLES).map(([k, r]) => {
+      const n = approved.filter((m) => (m.role || 'member') === k).length;
+      return `
+        <button class="role-card ${f.role === k ? 'on' : ''}" data-action="role-filter" data-role="${k}" aria-pressed="${f.role === k}">
+          <span class="role-head"><span class="pill tiny role-${k}">${r.label}</span><span class="count">${n}</span></span>
+          <ul>${r.can.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+        </button>`;
+    }).join('');
+
     const linked = new Map(state.persons.filter((p) => p.user_id).map((p) => [p.user_id, p]));
-    const group = (status) => data.filter((m) => m.status === status);
+    const q = f.q.trim().toLowerCase();
+    const matches = (m) => (!q || `${m.full_name} ${m.email}`.toLowerCase().includes(q))
+      && (f.role === 'all' || m.status !== 'approved' || (m.role || 'member') === f.role);
+
     const row = (m) => {
       const self = m.id === uid();
       const person = linked.get(m.id);
-      let btns = '';
-      if (!self) {
-        if (m.status === 'pending') btns = `
+      let controls;
+      if (self) {
+        controls = `<span class="pill tiny role-${m.role}">${ROLES[m.role].label}</span><span class="muted small">Another admin can change your role</span>`;
+      } else if (m.status === 'pending') {
+        controls = `
+          <label class="inline">Approve as ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
           <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">Reject</button>
           <button class="btn primary sm" data-action="member" data-op="approve" data-id="${m.id}">Approve</button>`;
-        else if (m.status === 'approved') btns = `
-          <button class="btn ghost sm" data-action="member" data-op="${m.is_admin ? 'unadmin' : 'admin'}" data-id="${m.id}">${m.is_admin ? 'Remove admin' : 'Make admin'}</button>
+      } else if (m.status === 'approved') {
+        controls = `
+          ${roleSelect(m, `data-role-for="${m.id}"`)}
           <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">Revoke access</button>`;
-        else btns = `<button class="btn sm" data-action="member" data-op="approve" data-id="${m.id}">Approve</button>`;
+      } else {
+        controls = `
+          <label class="inline">Approve as ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
+          <button class="btn sm" data-action="member" data-op="approve" data-id="${m.id}">Approve</button>`;
       }
       return `
         <div class="member">
-          <div>
-            <div class="name">${esc(m.full_name || '(no name)')} ${m.is_admin ? '<span class="pill tiny">Admin</span>' : ''} ${self ? '<span class="pill tiny">You</span>' : ''}</div>
+          <div class="member-info">
+            <div class="name">${esc(m.full_name || '(no name)')} ${self ? '<span class="pill tiny">You</span>' : ''}</div>
             <div class="muted small">${esc(m.email || '')} · joined ${new Date(m.created_at).toLocaleDateString()}</div>
             ${person ? `<div class="small">In tree as <button class="link" data-action="open" data-id="${person.id}">${esc(lineage(person).map((a) => a.full_name).join(' › '))}</button></div>` : ''}
           </div>
-          <div class="actions">${btns}</div>
+          <div class="actions">${controls}</div>
         </div>`;
     };
     const section = (title, list, empty) => `
@@ -861,23 +915,48 @@
         <h2>${title} <span class="count">${list.length}</span></h2>
         ${list.length ? list.map(row).join('') : `<p class="muted">${empty}</p>`}
       </section>`;
-    main.innerHTML = `
-      ${section('Waiting for approval', group('pending'), 'No one is waiting. New sign-ups will appear here.')}
-      ${section('Members', group('approved'), 'No members yet.')}
-      ${group('rejected').length ? section('Not approved', group('rejected'), '') : ''}`;
+    const pending = all.filter((m) => m.status === 'pending' && matches(m));
+    const members = approved.filter(matches);
+    const rejected = all.filter((m) => m.status === 'rejected' && matches(m));
+    const filterNote = f.role === 'all' ? '' : ` · showing ${ROLES[f.role].label.toLowerCase()}s <button class="link" data-action="role-filter" data-role="all">show all</button>`;
+    const hadFocus = document.activeElement?.id === 'member-search';
+    document.getElementById('member-lists').innerHTML = `
+      <div class="toolbar member-tools">
+        <div class="search"><input id="member-search" type="search" placeholder="Search members by name or email…" value="${esc(f.q)}" aria-label="Search members"></div>
+        <span class="muted small">${approved.length} approved${filterNote}</span>
+      </div>
+      ${section('Waiting for approval', pending, q ? 'No one waiting matches your search.' : 'No one is waiting. New sign-ups will appear here.')}
+      ${section('Members', members, q || f.role !== 'all' ? 'No members match.' : 'No members yet.')}
+      ${rejected.length ? section('Not approved', rejected, '') : ''}`;
+    if (hadFocus) {
+      const s = document.getElementById('member-search');
+      s.focus();
+      s.setSelectionRange(s.value.length, s.value.length);
+    }
   }
 
-  async function memberOp(id, op) {
-    const patch = {
-      approve: { status: 'approved' },
-      reject: { status: 'rejected', is_admin: false },
-      admin: { is_admin: true },
-      unadmin: { is_admin: false },
-    }[op];
+  async function memberOp(id, op, newRole) {
+    const m = (state.members || []).find((x) => x.id === id);
+    const name = m?.full_name || m?.email || 'this member';
+    let patch;
+    let msg;
+    if (op === 'approve') {
+      const r = document.getElementById(`role-new-${id}`)?.value || 'member';
+      patch = { status: 'approved', role: r };
+      msg = `${name} approved as ${ROLES[r].label}.`;
+    } else if (op === 'reject') {
+      if (m?.status === 'approved' && !confirm(`Remove ${name}'s access to the family tree?`)) return;
+      patch = { status: 'rejected', role: 'member' };
+      msg = m?.status === 'approved' ? 'Access removed.' : 'Request rejected.';
+    } else {
+      patch = { role: newRole };
+      msg = `${name} is now ${ROLES[newRole].label === 'Admin' ? 'an' : 'a'} ${ROLES[newRole].label}.`;
+    }
     const { error } = await sb.from('profiles').update(patch).eq('id', id);
-    if (error) return toast(friendlyError(error), 'error');
-    toast({ approve: 'Member approved.', reject: 'Access removed.', admin: 'Now an admin.', unadmin: 'Admin role removed.' }[op], 'ok');
-    renderAdmin();
+    if (error) { toast(friendlyError(error), 'error'); renderMemberLists(); return; }
+    Object.assign(m, patch);
+    toast(msg, 'ok');
+    renderMemberLists();
   }
 
   // ---------------------------------------------------------------- events
@@ -924,6 +1003,10 @@
       case 'edit': $modal.close(); setView('form', { editId: id }); break;
       case 'delete': deletePerson(id); break;
       case 'member': memberOp(id, el.dataset.op); break;
+      case 'role-filter':
+        state.memberFilter.role = state.memberFilter.role === el.dataset.role ? 'all' : el.dataset.role;
+        renderMemberLists();
+        break;
       case 'wiz-claim':
         if (confirm(`Link your account to ${state.byId.get(id)?.full_name}? Only do this if it is really you.`)) claimPerson(id);
         break;
@@ -943,6 +1026,7 @@
 
   document.addEventListener('input', (e) => {
     if (e.target.id === 'search') updateSearch(e.target.value);
+    if (e.target.id === 'member-search') { state.memberFilter.q = e.target.value; renderMemberLists(); }
     if (e.target.id === 'wiz-me-name') updateAlreadyInTree(e.target.value);
     if (e.target.id === 'wiz-search') {
       state.wiz.query = e.target.value;
@@ -962,6 +1046,15 @@
 
   document.addEventListener('change', (e) => {
     if (e.target.id === 'parent-select') updateParentPreview();
+    if (e.target.dataset.roleFor) {
+      const m = state.members.find((x) => x.id === e.target.dataset.roleFor);
+      const label = ROLES[e.target.value].label;
+      if (confirm(`Change ${m.full_name || m.email}'s role to ${label}?\n\n${label}s can: ${ROLES[e.target.value].can.join(', ').toLowerCase()}.`)) {
+        memberOp(m.id, 'role', e.target.value);
+      } else {
+        e.target.value = m.role;
+      }
+    }
     if (e.target.id === 'is-living') document.getElementById('death-wrap').hidden = e.target.checked;
     if (e.target.id === 'photo-input' && e.target.files[0]) {
       const url = URL.createObjectURL(e.target.files[0]);
