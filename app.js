@@ -329,7 +329,8 @@
           <div id="results" class="results" hidden></div>
         </div>
         <div class="tool-btns">
-          ${me ? '<button class="btn sm" data-action="find-me">Find me</button>' : ''}
+          ${me ? `<button class="btn sm" data-action="find-me">Find me</button>
+            <button class="btn primary sm" data-action="edit" data-id="${me.id}">✎ Edit my details</button>` : ''}
           <button class="btn ghost sm" data-action="expand-all">Expand all</button>
           <button class="btn ghost sm" data-action="collapse-all">Collapse all</button>
         </div>
@@ -434,22 +435,18 @@
           ${parent ? `<p class="muted">${p.gender === 'female' ? 'Daughter' : p.gender === 'male' ? 'Son' : 'Child'} of ${esc(parent.full_name)}</p>` : '<p class="muted">Top ancestor</p>'}
         </div>
       </div>
+      <div class="detail-actions">
+        ${canEdit(p) ? `<button class="btn primary" data-action="edit" data-id="${p.id}">✎ Edit details</button>` : ''}
+        ${canContribute() ? `<button class="btn" data-action="add-child" data-id="${p.id}">＋ Add child</button>` : ''}
+        <button class="btn ghost" data-action="show-in-tree" data-id="${p.id}">Show in tree</button>
+      </div>
       ${path.length > 1 ? `<nav class="crumbs" aria-label="Ancestry">${path.map((a, i) => (i === path.length - 1
         ? `<span>${esc(a.full_name)}</span>`
         : `<button class="link" data-action="open" data-id="${a.id}">${esc(a.full_name)}</button><span class="sep">›</span>`)).join('')}</nav>` : ''}
       ${rows.length ? `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
       ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
       ${kids.length ? `<h3>Children</h3><div class="chips">${kids.map((k) => `<button class="chip" data-action="open" data-id="${k.id}">${avatar(k, 'xs')}${esc(k.full_name)}</button>`).join('')}</div>` : ''}
-      <div class="actions spread">
-        <div>
-          ${canEditAll() && !kids.length ? `<button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete</button>` : ''}
-        </div>
-        <div class="actions">
-          <button class="btn ghost sm" data-action="show-in-tree" data-id="${p.id}">Show in tree</button>
-          ${canEdit(p) ? `<button class="btn sm" data-action="edit" data-id="${p.id}">Edit</button>` : ''}
-          ${canContribute() ? `<button class="btn primary sm" data-action="add-child" data-id="${p.id}">Add child</button>` : ''}
-        </div>
-      </div>`;
+      ${canEditAll() && !kids.length ? `<div class="danger-zone"><button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete ${esc(p.full_name)}</button></div>` : ''}`;
     if (!$modal.open) $modal.showModal();
     $modal.scrollTop = 0;
   }
