@@ -247,8 +247,8 @@
     if (mode === 'login') {
       form = `
         <form id="login-form" class="stack">
-          <label>Email<input name="email" type="email" required autocomplete="email"></label>
-          <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
+          <label>Password<span class="pw-wrap"><input name="password" type="password" required autocomplete="current-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span></label>
           <button class="btn primary" type="submit">Log in</button>
           <button class="link" type="button" data-action="auth-mode" data-mode="forgot">Forgot password?</button>
         </form>`;
@@ -256,8 +256,8 @@
       form = `
         <form id="signup-form" class="stack">
           <label>Full name<input name="full_name" required autocomplete="name"></label>
-          <label>Email<input name="email" type="email" required autocomplete="email"></label>
-          <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"><small class="muted">At least 8 characters.</small></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
+          <label>Password<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span><small class="muted">At least 8 characters.</small></label>
           <button class="btn primary" type="submit">Request membership</button>
           <p class="muted small">A family admin will check and approve your account before you can see the tree.</p>
         </form>`;
@@ -265,7 +265,7 @@
       form = `
         <form id="forgot-form" class="stack">
           <p class="muted">Enter your email and we will send you a link to set a new password.</p>
-          <label>Email<input name="email" type="email" required autocomplete="email"></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
           <button class="btn primary" type="submit">Send reset link</button>
           <button class="link" type="button" data-action="auth-mode" data-mode="login">Back to log in</button>
         </form>`;
@@ -283,7 +283,7 @@
       <div class="center-screen"><div class="panel narrow">
         <h1>Set a new password</h1>
         <form id="recovery-form" class="stack">
-          <label>New password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+          <label>New password<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span></label>
           <button class="btn primary" type="submit">Save password</button>
         </form>
       </div></div>`;
@@ -1237,6 +1237,15 @@
     const { action, id } = el.dataset;
     switch (action) {
       case 'auth-mode': renderAuth(el.dataset.mode); break;
+      case 'toggle-pw': {
+        const input = el.parentElement.querySelector('input');
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        el.textContent = show ? 'Hide' : 'Show';
+        el.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        input.focus();
+        break;
+      }
       case 'logout': await sb.auth.signOut(); break;
       case 'recheck': route(); break;
       case 'view': if ($modal.open) $modal.close(); setView(el.dataset.view); break;
@@ -1348,6 +1357,29 @@
       document.getElementById('photo-preview').innerHTML = `<img class="photo" src="${url}" alt="">`;
     }
   });
+
+  // On phones the on-screen keyboard can cover the field being typed in. While a field
+  // is focused, add room below the page and scroll the field into the visible area.
+  const isField = (el) => el?.matches?.('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea, select');
+  function keepFieldVisible() {
+    const el = document.activeElement;
+    if (!isField(el) || el.closest('dialog')) return;
+    const vv = window.visualViewport;
+    const r = el.getBoundingClientRect();
+    const visibleBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    if (r.bottom > visibleBottom - 16 || r.top < 8) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
+  document.addEventListener('focusin', (e) => {
+    if (!isField(e.target)) return;
+    document.body.classList.add('typing');
+    setTimeout(keepFieldVisible, 350); // after the keyboard has opened
+  });
+  document.addEventListener('focusout', () => {
+    setTimeout(() => { if (!isField(document.activeElement)) document.body.classList.remove('typing'); }, 150);
+  });
+  window.visualViewport?.addEventListener('resize', () => setTimeout(keepFieldVisible, 50));
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
