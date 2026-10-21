@@ -262,6 +262,7 @@
 
   function renderMessage(title, body) {
     state.screen = 'message';
+    chatSync();
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow">
         ${langRow()}
@@ -289,6 +290,7 @@
 
   function renderAuth(mode) {
     state.screen = 'auth';
+    chatSync();
     state.authMode = mode;
     const pwToggle = `<button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="${t('Show password')}">${t('Show')}</button>`;
     const tabs = `
@@ -334,6 +336,7 @@
 
   function renderRecovery() {
     state.screen = 'recovery';
+    chatSync();
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow">
         ${langRow()}
@@ -347,6 +350,7 @@
 
   function renderPending(profile) {
     state.screen = 'pending';
+    chatSync();
     const name = profile?.full_name || state.session.user.email;
     const body = profile?.status === 'rejected'
       ? `<p>${t('Your membership request was not approved. If you think this is a mistake, please contact the family admin.')}</p>`
@@ -393,6 +397,7 @@
       </header>
       <main id="main"></main>`;
     renderView();
+    chatSync();
   }
 
   function setView(v, opts) {
@@ -1318,6 +1323,458 @@
     else route();
   }
 
+  // ---------------------------------------------------------------- family chat
+  // One group chat for all approved members. A round button in the corner opens a side panel;
+  // messages arrive live. Files go to the private 'chat' storage bucket.
+
+  const CHAT_BUCKET = 'chat';
+  const CHAT_PAGE = 40;
+  const CHAT_MAX_MB = 50;
+  const CHAT_MAX_VIDEO_SECONDS = 15;
+  const CHAT_MAX_VOICE_SECONDS = 120;
+  const chat = {
+    mounted: false, open: false, lang: null, messages: [], urls: new Map(), channel: null,
+    hasOlder: false, unread: 0, pending: null, recorder: null, recTimer: null, sending: false,
+  };
+  const ICON = {
+    chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    clip: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5 12.4 19a5 5 0 0 1-7.1-7.1l7.8-7.7a3.4 3.4 0 0 1 4.8 4.8l-7.8 7.7a1.7 1.7 0 0 1-2.4-2.4l7.2-7.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>',
+    send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12 20 4l-4 16-4.5-6.5zM11.5 13.5 20 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+    file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+  };
+  const NE_NUM = (s) => (lang === 'ne' ? String(s).replace(/\d/g, (d) => NE_DIGITS[d]) : String(s));
+  const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  const fmtSecs = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  const isTouch = () => window.matchMedia?.('(pointer: coarse)').matches;
+  const seenKey = () => `chatSeen:${uid()}`;
+  const getSeen = () => { try { return localStorage.getItem(seenKey()) || ''; } catch { return ''; } };
+  const setSeen = (ts) => { try { localStorage.setItem(seenKey(), ts); } catch { /* private mode */ } };
+
+  // Called whenever a top-level screen is drawn: the chat exists only inside the signed-in app.
+  function chatSync() {
+    const on = state.screen === 'app' && state.profile?.status === 'approved';
+    if (on && !chat.mounted) chatMount();
+    else if (!on && chat.mounted) chatUnmount();
+    else if (on && chat.lang !== lang) { chatRenderShell(); chatRenderList(true); }
+  }
+
+  async function chatMount() {
+    chat.mounted = true;
+    chatRenderShell();
+    await chatLoad();
+    chat.channel = sb.channel('family-chat')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => chatAdd(p.new, true))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) => chatRemoveLocal(p.old?.id))
+      .subscribe();
+  }
+
+  function chatUnmount() {
+    if (chat.channel) sb.removeChannel(chat.channel);
+    if (chat.recorder) chat.recorder.stop();
+    document.getElementById('chat-fab')?.remove();
+    document.getElementById('chat-panel')?.remove();
+    Object.assign(chat, { mounted: false, open: false, messages: [], urls: new Map(), channel: null, unread: 0, pending: null });
+    document.body.classList.remove('chat-open');
+  }
+
+  function chatRenderShell() {
+    chat.lang = lang;
+    let fab = document.getElementById('chat-fab');
+    if (!fab) {
+      fab = document.createElement('button');
+      fab.id = 'chat-fab';
+      fab.className = 'chat-fab';
+      fab.dataset.action = 'chat-open';
+      document.body.appendChild(fab);
+    }
+    fab.setAttribute('aria-label', t('Open family chat'));
+    fab.innerHTML = `${ICON.chat}<span class="chat-badge" id="chat-badge" hidden></span>`;
+    chatBadge();
+
+    const draft = document.getElementById('chat-text')?.value || '';
+    let panel = document.getElementById('chat-panel');
+    if (!panel) {
+      panel = document.createElement('aside');
+      panel.id = 'chat-panel';
+      panel.className = 'chat-panel';
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-labelledby', 'chat-title');
+      panel.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(panel);
+    }
+    panel.innerHTML = `
+      <header class="chat-head">
+        <div>
+          <h2 id="chat-title">${t('Family chat')}</h2>
+          <p class="muted small">${t('Only approved family members can see this chat.')}</p>
+        </div>
+        <button class="close" data-action="chat-close" aria-label="${t('Close chat')}">×</button>
+      </header>
+      <div class="chat-list" id="chat-list"></div>
+      <div class="chat-pending" id="chat-pending" hidden></div>
+      <form id="chat-form" class="chat-compose">
+        <input type="file" id="chat-file" hidden>
+        <button type="button" class="chat-icon" data-action="chat-attach" aria-label="${t('Attach a photo, video, audio or file')}" title="${t('Attach a photo, video, audio or file')}">${ICON.clip}</button>
+        <button type="button" class="chat-icon" id="chat-rec" data-action="chat-record" aria-label="${t('Record a voice message')}" title="${t('Record a voice message')}">${ICON.mic}</button>
+        <textarea id="chat-text" rows="1" maxlength="4000" placeholder="${t('Write a message…')}" aria-label="${t('Message')}"></textarea>
+        <button type="submit" class="chat-icon send" aria-label="${t('Send')}" title="${t('Send')}">${ICON.send}</button>
+      </form>`;
+    document.getElementById('chat-text').value = draft;
+    chatRenderPending();
+  }
+
+  function chatBadge() {
+    const b = document.getElementById('chat-badge');
+    if (!b) return;
+    b.hidden = !chat.unread;
+    b.textContent = chat.unread > 99 ? '99+' : NE_NUM(chat.unread);
+    document.getElementById('chat-fab')?.setAttribute('aria-label',
+      chat.unread ? t('Open family chat ({n} new)', { n: chat.unread }) : t('Open family chat'));
+  }
+
+  async function chatLoad(older = false) {
+    let q = sb.from('messages').select('*').order('created_at', { ascending: false }).limit(CHAT_PAGE);
+    if (older && chat.messages.length) q = q.lt('created_at', chat.messages[0].created_at);
+    const { data, error } = await q;
+    if (error) {
+      const list = document.getElementById('chat-list');
+      if (list) list.innerHTML = `<p class="muted pad">${t('The chat could not be loaded.')}</p>`;
+      return;
+    }
+    const batch = (data || []).reverse();
+    chat.hasOlder = (data || []).length === CHAT_PAGE;
+    chat.messages = older ? [...batch, ...chat.messages] : batch;
+    await chatSignUrls(batch);
+    if (!older) {
+      const seen = getSeen();
+      chat.unread = seen ? batch.filter((m) => m.created_at > seen && m.sender_id !== uid()).length : 0;
+      if (!seen && batch.length) setSeen(batch[batch.length - 1].created_at);
+      chatBadge();
+    }
+    chatRenderList(!older);
+  }
+
+  async function chatSignUrls(list) {
+    const need = list.filter((m) => m.file_path && !chat.urls.has(m.file_path));
+    const view = need.filter((m) => m.file_kind !== 'file').map((m) => m.file_path);
+    const dl = need.filter((m) => m.file_kind === 'file');
+    if (view.length) {
+      const { data } = await sb.storage.from(CHAT_BUCKET).createSignedUrls(view, 60 * 60 * 6);
+      for (const u of data || []) if (u.signedUrl) chat.urls.set(u.path, u.signedUrl);
+    }
+    // Files get a link that downloads under their original name.
+    await Promise.all(dl.map(async (m) => {
+      const { data } = await sb.storage.from(CHAT_BUCKET).createSignedUrl(m.file_path, 60 * 60 * 6, { download: m.file_name || true });
+      if (data?.signedUrl) chat.urls.set(m.file_path, data.signedUrl);
+    }));
+  }
+
+  function chatDayLabel(ts) {
+    const d = new Date(ts);
+    const today = new Date();
+    const yest = new Date(Date.now() - 864e5);
+    if (d.toDateString() === today.toDateString()) return t('Today');
+    if (d.toDateString() === yest.toDateString()) return t('Yesterday');
+    return fmtDate(ts);
+  }
+
+  function chatAttachmentHtml(m) {
+    if (!m.file_path) return '';
+    const url = chat.urls.get(m.file_path);
+    if (!url) return `<div class="chat-att muted small">${t('Loading…')}</div>`;
+    const name = esc(m.file_name || t('File'));
+    if (m.file_kind === 'image') return `<a class="chat-att img" href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${name}" loading="lazy"></a>`;
+    if (m.file_kind === 'video') return `<video class="chat-att" src="${esc(url)}" controls playsinline preload="metadata"></video>`;
+    if (m.file_kind === 'audio') return `<audio class="chat-att" src="${esc(url)}" controls preload="metadata"></audio>`;
+    return `<a class="chat-att file" href="${esc(url)}" target="_blank" rel="noopener">${ICON.file}<span><b>${name}</b><small>${m.file_size ? fmtSize(m.file_size) : ''}</small></span></a>`;
+  }
+
+  function chatMsgHtml(m, prev) {
+    const mine = m.sender_id === uid();
+    const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
+    const grouped = !newDay && prev.sender_id === m.sender_id && new Date(m.created_at) - new Date(prev.created_at) < 5 * 60e3;
+    const person = state.persons.find((p) => p.user_id && p.user_id === m.sender_id);
+    const name = person?.full_name || m.sender_name || t('Family member');
+    const time = NE_NUM(new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    const canDelete = mine || isAdmin();
+    return `
+      ${newDay ? `<div class="chat-day"><span>${esc(chatDayLabel(m.created_at))}</span></div>` : ''}
+      <div class="chat-msg${mine ? ' mine' : ''}${grouped ? ' grouped' : ''}" data-msg="${m.id}">
+        ${mine ? '' : `<span class="chat-ava">${grouped ? '' : (person ? avatar(person, 'sm') : `<span class="avatar initials sm">${esc(initials(name))}</span>`)}</span>`}
+        <div class="chat-bubble">
+          ${mine || grouped ? '' : `<div class="chat-name">${esc(name)}</div>`}
+          ${chatAttachmentHtml(m)}
+          ${m.body ? `<div class="chat-text">${esc(m.body)}</div>` : ''}
+          <div class="chat-meta">${time}${canDelete ? `<button class="chat-del" data-action="chat-delete" data-id="${m.id}" aria-label="${t('Delete message')}" title="${t('Delete message')}">×</button>` : ''}</div>
+        </div>
+      </div>`;
+  }
+
+  function chatRenderList(toBottom) {
+    const list = document.getElementById('chat-list');
+    if (!list) return;
+    const fromBottom = list.scrollHeight - list.scrollTop;
+    list.innerHTML = `
+      ${chat.hasOlder ? `<div class="chat-older"><button class="btn ghost sm" data-action="chat-older">${t('Show older messages')}</button></div>` : ''}
+      ${chat.messages.length ? chat.messages.map((m, i) => chatMsgHtml(m, chat.messages[i - 1])).join('')
+        : `<div class="chat-empty"><p><b>${t('No messages yet.')}</b></p><p class="muted small">${t('Say namaste to the family!')}</p></div>`}`;
+    // Keep the view steady when older messages are added above.
+    list.scrollTop = toBottom ? list.scrollHeight : list.scrollHeight - fromBottom;
+  }
+
+  async function chatAdd(m, live) {
+    if (!m || chat.messages.some((x) => x.id === m.id)) return;
+    const list = document.getElementById('chat-list');
+    const nearBottom = list && list.scrollHeight - list.scrollTop - list.clientHeight < 120;
+    chat.messages.push(m);
+    await chatSignUrls([m]);
+    chatRenderList(nearBottom || m.sender_id === uid());
+    if (live && m.sender_id !== uid()) {
+      if (chat.open && document.visibilityState === 'visible') setSeen(m.created_at);
+      else { chat.unread += 1; chatBadge(); }
+    }
+  }
+
+  function chatRemoveLocal(id) {
+    if (!id || !chat.messages.some((m) => m.id === id)) return;
+    chat.messages = chat.messages.filter((m) => m.id !== id);
+    chatRenderList(false);
+  }
+
+  function chatOpen() {
+    const panel = document.getElementById('chat-panel');
+    if (!panel) return;
+    chat.open = true;
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('chat-open');
+    chat.unread = 0;
+    chatBadge();
+    const last = chat.messages[chat.messages.length - 1];
+    if (last) setSeen(last.created_at);
+    const list = document.getElementById('chat-list');
+    list.scrollTop = list.scrollHeight;
+    if (!isTouch()) document.getElementById('chat-text')?.focus();
+  }
+
+  function chatClose() {
+    const panel = document.getElementById('chat-panel');
+    if (!panel) return;
+    chat.open = false;
+    panel.classList.remove('open');
+    panel.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('chat-open');
+    document.getElementById('chat-fab')?.focus();
+  }
+
+  function mediaDuration(file, tag) {
+    return new Promise((resolve) => {
+      const el = document.createElement(tag);
+      el.preload = 'metadata';
+      let finished = false;
+      const done = (v) => {
+        if (finished) return;
+        finished = true;
+        URL.revokeObjectURL(el.src);
+        resolve(Number.isFinite(v) && v > 0 ? v : null);
+      };
+      el.onloadedmetadata = () => {
+        if (Number.isFinite(el.duration) && el.duration > 0) { done(el.duration); return; }
+        // Some recordings (e.g. WebM) only learn their length after seeking to the end.
+        el.ondurationchange = () => { if (Number.isFinite(el.duration) && el.duration > 0) done(el.duration); };
+        el.currentTime = 1e7;
+      };
+      el.onerror = () => done(null);
+      setTimeout(() => done(el.duration), 8000);
+      el.src = URL.createObjectURL(file);
+    });
+  }
+
+  // Check and prepare a chosen file; it is uploaded when the message is sent.
+  async function chatPrepare(file) {
+    if (!file) return;
+    if (file.size > CHAT_MAX_MB * 1048576) { toast(t('That file is too big. The limit is {n} MB.', { n: CHAT_MAX_MB }), 'error'); return; }
+    const type = file.type || '';
+    let item = { kind: 'file', blob: file, type: type || 'application/octet-stream', name: file.name || 'file', duration: null };
+    if (type.startsWith('image/') && !/gif|svg/.test(type)) {
+      try {
+        const blob = await resizeImage(file, 1600);
+        item = { kind: 'image', blob, type: 'image/jpeg', name: `${(file.name || 'photo').replace(/\.[^.]+$/, '')}.jpg` };
+      } catch { item = { ...item, kind: 'image' }; }
+    } else if (type.startsWith('image/')) {
+      item.kind = 'image';
+    } else if (type.startsWith('video/')) {
+      const secs = await mediaDuration(file, 'video');
+      if (secs == null) { toast(t("Couldn't check how long this video is. Please choose an MP4 or MOV video."), 'error'); return; }
+      if (secs > CHAT_MAX_VIDEO_SECONDS + 0.5) {
+        toast(t('Videos can be at most {max} seconds long. This one is {n} seconds.', { max: CHAT_MAX_VIDEO_SECONDS, n: Math.round(secs) }), 'error');
+        return;
+      }
+      item = { ...item, kind: 'video', duration: secs };
+    } else if (type.startsWith('audio/')) {
+      item = { ...item, kind: 'audio', duration: await mediaDuration(file, 'audio') };
+    }
+    chatSetPending(item);
+  }
+
+  function chatSetPending(item) {
+    if (chat.pending?.preview) URL.revokeObjectURL(chat.pending.preview);
+    chat.pending = item ? { ...item, preview: URL.createObjectURL(item.blob) } : null;
+    chatRenderPending();
+  }
+
+  function chatRenderPending() {
+    const box = document.getElementById('chat-pending');
+    if (!box) return;
+    const p = chat.pending;
+    box.hidden = !p;
+    if (!p) { box.innerHTML = ''; return; }
+    const prev = p.kind === 'image' ? `<img src="${p.preview}" alt="">`
+      : p.kind === 'video' ? `<video src="${p.preview}" muted playsinline preload="metadata"></video>`
+        : p.kind === 'audio' ? `<audio src="${p.preview}" controls preload="metadata"></audio>`
+          : `<span class="chat-pend-icon">${ICON.file}</span>`;
+    const label = { image: t('Photo'), video: t('Video'), audio: t('Audio'), file: t('File') }[p.kind];
+    box.innerHTML = `
+      <div class="chat-pend-media">${prev}</div>
+      <div class="chat-pend-text"><b>${esc(label)}</b><small>${esc(p.name)} · ${fmtSize(p.blob.size)}${p.duration >= 1 ? ` · ${fmtSecs(p.duration)}` : ''}</small></div>
+      <button type="button" class="chat-del big" data-action="chat-unattach" aria-label="${t('Remove attachment')}">×</button>`;
+  }
+
+  async function chatToggleRecord() {
+    if (chat.recorder) { chat.recorder.stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      toast(t('Voice recording does not work in this browser. You can attach an audio file instead.'), 'error');
+      return;
+    }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {
+      toast(t('The microphone is blocked. Allow it in your browser settings to record.'), 'error');
+      return;
+    }
+    // MP4 audio plays on every phone; fall back to WebM where MP4 recording isn't available.
+    const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => MediaRecorder.isTypeSupported?.(m)) || '';
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    const started = Date.now();
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach((tr) => tr.stop());
+      clearInterval(chat.recTimer);
+      chat.recorder = null;
+      chatRecButton();
+      const type = (rec.mimeType || mime || 'audio/webm').split(';')[0];
+      const secs = (Date.now() - started) / 1000;
+      if (secs < 0.8 || !chunks.length) return;
+      chatSetPending({ kind: 'audio', blob: new Blob(chunks, { type }), type, name: `voice-message.${type.includes('mp4') ? 'm4a' : 'webm'}`, duration: secs });
+    };
+    rec.start();
+    chat.recorder = rec;
+    chat.recStarted = started;
+    chatRecButton();
+    chat.recTimer = setInterval(() => {
+      const secs = (Date.now() - started) / 1000;
+      if (secs >= CHAT_MAX_VOICE_SECONDS) rec.stop(); else chatRecButton();
+    }, 500);
+  }
+
+  function chatRecButton() {
+    const b = document.getElementById('chat-rec');
+    if (!b) return;
+    const on = !!chat.recorder;
+    b.classList.toggle('recording', on);
+    b.innerHTML = on ? `${ICON.stop}<span class="rec-time">${NE_NUM(fmtSecs((Date.now() - chat.recStarted) / 1000))}</span>` : ICON.mic;
+    b.setAttribute('aria-label', on ? t('Stop recording') : t('Record a voice message'));
+  }
+
+  async function chatSend() {
+    if (chat.sending) return;
+    const box = document.getElementById('chat-text');
+    const text = box.value.trim();
+    const p = chat.pending;
+    if (!text && !p) return;
+    if (chat.recorder) { toast(t('Stop the recording first.'), 'error'); return; }
+    chat.sending = true;
+    const btn = document.querySelector('#chat-form .send');
+    btn.disabled = true;
+    btn.classList.add('busy');
+    try {
+      let fileFields = {};
+      if (p) {
+        const ext = (p.name.match(/\.[A-Za-z0-9]{1,8}$/) || [''])[0].toLowerCase();
+        const path = `${uid()}/${crypto.randomUUID()}${ext}`;
+        const { error } = await sb.storage.from(CHAT_BUCKET).upload(path, p.blob, { contentType: p.type });
+        if (error) throw error;
+        fileFields = { file_path: path, file_kind: p.kind, file_name: p.name, file_size: p.blob.size, file_type: p.type, duration: p.duration || null };
+      }
+      const { data, error } = await sb.from('messages').insert({ body: text || null, ...fileFields }).select().single();
+      if (error) throw error;
+      box.value = '';
+      chatGrow(box);
+      chatSetPending(null);
+      setSeen(data.created_at);
+      await chatAdd(data, false);
+    } catch (e) {
+      toast(/size|too large|exceeded/i.test(e?.message || '') ? t('That file is too big. The limit is {n} MB.', { n: CHAT_MAX_MB }) : friendlyError(e), 'error');
+    } finally {
+      chat.sending = false;
+      btn.disabled = false;
+      btn.classList.remove('busy');
+    }
+  }
+
+  async function chatDelete(id) {
+    const m = chat.messages.find((x) => x.id === id);
+    if (!m || !confirm(t('Delete this message for everyone?'))) return;
+    const { error } = await sb.from('messages').delete().eq('id', id);
+    if (error) { toast(friendlyError(error), 'error'); return; }
+    if (m.file_path) sb.storage.from(CHAT_BUCKET).remove([m.file_path]); // best effort
+    chatRemoveLocal(id);
+  }
+
+  function chatGrow(el) {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }
+
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action^="chat-"]');
+    if (!el) return;
+    switch (el.dataset.action) {
+      case 'chat-open': chatOpen(); break;
+      case 'chat-close': chatClose(); break;
+      case 'chat-attach': document.getElementById('chat-file').click(); break;
+      case 'chat-unattach': chatSetPending(null); break;
+      case 'chat-record': chatToggleRecord(); break;
+      case 'chat-delete': chatDelete(el.dataset.id); break;
+      case 'chat-older': chatLoad(true); break;
+      default: break;
+    }
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.id !== 'chat-file') return;
+    const f = e.target.files[0];
+    e.target.value = '';
+    chatPrepare(f);
+  });
+  document.addEventListener('input', (e) => { if (e.target.id === 'chat-text') chatGrow(e.target); });
+  document.addEventListener('submit', (e) => { if (e.target.id === 'chat-form') { e.preventDefault(); chatSend(); } });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && chat.open && !$modal.open) chatClose();
+    // Enter sends on computers; on phones Enter makes a new line and the send button sends.
+    if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey && !isTouch() && !e.isComposing) {
+      e.preventDefault();
+      chatSend();
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && chat.open) {
+      const last = chat.messages[chat.messages.length - 1];
+      if (last) setSeen(last.created_at);
+    }
+  });
+
   // ---------------------------------------------------------------- events
 
   document.addEventListener('click', async (e) => {
@@ -1459,7 +1916,7 @@
   const isField = (el) => el?.matches?.('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea, select');
   function keepFieldVisible() {
     const el = document.activeElement;
-    if (!isField(el) || el.closest('dialog')) return;
+    if (!isField(el) || el.closest('dialog, .chat-panel')) return;
     const vv = window.visualViewport;
     const r = el.getBoundingClientRect();
     const visibleBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
