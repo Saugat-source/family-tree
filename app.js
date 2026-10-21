@@ -22,8 +22,19 @@
     const out = (lang === 'ne' && NE[s]) || s;
     return vars ? out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? num(vars[k]) : m)) : out;
   };
+  // Site name and welcome line. Admins change them on the Members & roles page; they are
+  // kept in the site_settings table (cached here so the name shows at once on the next visit).
+  const DEFAULT_TAGLINE = 'A private space for our family to record who we are and where we come from.';
+  let site = (() => { try { return JSON.parse(localStorage.getItem('site') || 'null') || {}; } catch { return {}; } })();
+  const siteName = () => (lang === 'ne' && site.title_ne) || t(site.title_en || siteTitle);
+  const siteTagline = () => (lang === 'ne' && site.tagline_ne) || site.tagline_en || t(DEFAULT_TAGLINE);
+  function setSite(next) {
+    site = next || {};
+    try { localStorage.setItem('site', JSON.stringify(site)); } catch { /* private mode */ }
+    document.title = siteName();
+  }
   document.documentElement.lang = lang;
-  document.title = t(siteTitle);
+  document.title = siteName();
 
   if (!cfg.supabaseUrl || cfg.supabaseUrl.startsWith('YOUR_') || !cfg.supabaseAnonKey || cfg.supabaseAnonKey.startsWith('YOUR_')) {
     $app.innerHTML = `
@@ -228,7 +239,13 @@
     setTimeout(route, 0);
   });
 
+  // Read the site name before the first screen; if the table isn't there yet, keep the built-in name.
+  const siteLoaded = sb.from('site_settings').select('*').eq('id', 1).maybeSingle()
+    .then(({ data }) => { if (data) setSite(data); })
+    .catch(() => {});
+
   async function route() {
+    await siteLoaded;
     if (state.recovering) return renderRecovery();
     if (!state.session) return renderAuth('login');
     const { data, error } = await sb.from('profiles').select('*').eq('id', uid()).maybeSingle();
@@ -265,8 +282,8 @@
     return `
       <div class="brand-block">
         <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7zM24 34l-6-4M24 30l6-3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h1>${esc(t(siteTitle))}</h1>
-        <p class="muted">${t('A private space for our family to record who we are and where we come from.')}</p>
+        <h1>${esc(siteName())}</h1>
+        <p class="muted">${esc(siteTagline())}</p>
       </div>`;
   }
 
@@ -364,7 +381,7 @@
     ];
     $app.innerHTML = `
       <header class="topbar">
-        <div class="brand"><svg class="brand-mark sm" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(t(siteTitle))}</div>
+        <div class="brand"><svg class="brand-mark sm" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(siteName())}</div>
         <nav class="tabs">
           ${nav.map(([v, label]) => `<button class="${state.view === v ? 'on' : ''}" data-action="view" data-view="${v}">${label}</button>`).join('')}
         </nav>
@@ -1155,6 +1172,19 @@
     state.memberFilter ||= { q: '', role: 'all' };
     main.innerHTML = `
       <section class="panel">
+        <h2>${t('Site settings')}</h2>
+        <p class="muted small">${t('The name and welcome line shown on the login page and at the top of every page. Leave the Nepali boxes empty to use the standard translation.')}</p>
+        <form id="site-form" class="stack">
+          <div class="grid">
+            <label>${t('Site name (English)')}<input name="title_en" required maxlength="80" value="${esc(site.title_en || siteTitle)}"></label>
+            <label>${t('Site name (Nepali)')}<input name="title_ne" lang="ne" maxlength="80" value="${esc(site.title_ne || '')}" placeholder="${esc(NE[site.title_en || siteTitle] || '')}"></label>
+            <label>${t('Welcome line (English)')}<textarea name="tagline_en" rows="2" maxlength="240" placeholder="${esc(DEFAULT_TAGLINE)}">${esc(site.tagline_en || '')}</textarea></label>
+            <label>${t('Welcome line (Nepali)')}<textarea name="tagline_ne" lang="ne" rows="2" maxlength="240" placeholder="${esc(NE[DEFAULT_TAGLINE] || '')}">${esc(site.tagline_ne || '')}</textarea></label>
+          </div>
+          <div class="actions"><button class="btn primary" type="submit">${t('Save site settings')}</button></div>
+        </form>
+      </section>
+      <section class="panel">
         <h2>${t('Roles')}</h2>
         <p class="muted small">${t("Every approved member has one role. Change someone's role from the list below.")}</p>
         <div class="role-grid" id="role-grid"></div>
@@ -1279,7 +1309,7 @@
     lang = next;
     try { localStorage.setItem('lang', lang); } catch { /* private mode */ }
     document.documentElement.lang = lang;
-    document.title = t(siteTitle);
+    document.title = siteName();
     const openId = $modal.open ? $modalBody.dataset.id : null;
     if (state.screen === 'auth') renderAuth(state.authMode);
     else if (state.screen === 'recovery') renderRecovery();
@@ -1504,6 +1534,19 @@
           route();
         });
         break;
+      case 'site-form': {
+        const val = (k) => (fd.get(k) || '').toString().trim() || null;
+        const rec = { title_en: val('title_en'), title_ne: val('title_ne'), tagline_en: val('tagline_en'), tagline_ne: val('tagline_ne'), updated_by: uid(), updated_at: new Date().toISOString() };
+        if (!rec.title_en) { toast(t('Please enter a name.'), 'error'); break; }
+        await busy(async () => {
+          const { data, error } = await sb.from('site_settings').update(rec).eq('id', 1).select().maybeSingle();
+          if (error || !data) { toast(error ? friendlyError(error) : t('You do not have permission to do that.'), 'error'); return; }
+          setSite(data);
+          renderApp();
+          toast(t('Site settings saved.'), 'ok');
+        });
+        break;
+      }
       case 'person-form':
         await savePerson(form);
         break;

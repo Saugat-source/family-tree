@@ -255,4 +255,14 @@ window.FAMILY_TREE_NE = {
   '{name} is now a {role}.': '{name} अब {role} हुनुभयो।',
   "Change {name}'s role to {role}?": '{name}को भूमिका {role} मा बदल्ने?',
   '{role}s can: {list}.': '{role}ले गर्न सक्ने: {list}।',
+
+  // site settings (admin)
+  'Site settings': 'साइट सेटिङ',
+  'The name and welcome line shown on the login page and at the top of every page. Leave the Nepali boxes empty to use the standard translation.': 'लग इन पेज र हरेक पेजको माथि देखिने नाम र स्वागत वाक्य। मानक अनुवाद प्रयोग गर्न नेपाली बाकस खाली छोड्नुहोस्।',
+  'Site name (English)': 'साइटको नाम (अंग्रेजी)',
+  'Site name (Nepali)': 'साइटको नाम (नेपाली)',
+  'Welcome line (English)': 'स्वागत वाक्य (अंग्रेजी)',
+  'Welcome line (Nepali)': 'स्वागत वाक्य (नेपाली)',
+  'Save site settings': 'साइट सेटिङ सेभ गर्नुहोस्',
+  'Site settings saved.': 'साइट सेटिङ सेभ भयो।',
 };

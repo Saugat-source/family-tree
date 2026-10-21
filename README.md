@@ -91,6 +91,6 @@ You only do step 6 once. After that you approve everyone from the **Members & ro
   - connect your own email service under **Authentication → SMTP Settings**.
 - **Free plan pause**: Supabase pauses free projects after about a week with no activity. If that happens, open the Supabase dashboard and click **Restore**. Regular visits keep it awake.
 - **Backups**: export your data now and then from **Table Editor → persons → Export to CSV**.
-- **Changing the title**: edit `siteTitle` in `config.js`, and its Nepali version in `i18n.js`.
+- **Changing the site name or welcome line**: an admin opens **Members & roles → Site settings** on the website, edits the English and Nepali boxes and saves. No code change needed. (`siteTitle` in `config.js` is only used if the database can't be reached.)
 - **Languages**: everyone can switch between English and नेपाली with the buttons at the top; the site remembers the choice on that phone or computer. To fix a Nepali wording, change the right-hand side of its line in `i18n.js`.
 - **Updating the site**: change files in the GitHub repository; Pages republishes automatically within a minute or two.
