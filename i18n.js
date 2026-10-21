@@ -2,7 +2,7 @@
 // To fix a translation, change the right-hand side. {name}, {n} and similar are filled in by the app.
 // A missing entry simply shows the English.
 window.FAMILY_TREE_NE = {
-  'Shrestha Family Tree': 'श्रेष्ठ परिवारको वंशवृक्ष',
+  'Tuladhar Family Tree': 'तुलाधर परिवारको वंशवृक्ष',
   'Family Tree': 'वंशवृक्ष',
   'Could not load': 'खोल्न सकिएन',
   'Check your internet connection and reload the page.': 'इन्टरनेट जडान जाँच गरी पेज फेरि खोल्नुहोस्।',

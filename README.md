@@ -1,4 +1,4 @@
-# Shrestha Family Tree
+# Tuladhar Family Tree
 
 A private family tree website. Relatives sign up, an admin approves them, and approved members add themselves (with details and a photo) under the right ancestor.
 
