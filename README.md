@@ -11,6 +11,7 @@ A private family tree website. Relatives sign up, an admin approves them, and ap
 |---|---|
 | `index.html`, `app.js`, `styles.css` | The website |
 | `config.js` | Your Supabase keys and the site title |
+| `i18n.js` | The Nepali wording for every English line on the site |
 | `supabase-schema.sql` | Creates the database, roles, access rules, photo storage and the starting family line |
 | `supabase-update-roles.sql` | Only for databases created before roles were added; new projects don't need it |
 
@@ -90,5 +91,6 @@ You only do step 6 once. After that you approve everyone from the **Members & ro
   - connect your own email service under **Authentication → SMTP Settings**.
 - **Free plan pause**: Supabase pauses free projects after about a week with no activity. If that happens, open the Supabase dashboard and click **Restore**. Regular visits keep it awake.
 - **Backups**: export your data now and then from **Table Editor → persons → Export to CSV**.
-- **Changing the title**: edit `siteTitle` in `config.js`.
+- **Changing the title**: edit `siteTitle` in `config.js`, and its Nepali version in `i18n.js`.
+- **Languages**: everyone can switch between English and नेपाली with the buttons at the top; the site remembers the choice on that phone or computer. To fix a Nepali wording, change the right-hand side of its line in `i18n.js`.
 - **Updating the site**: change files in the GitHub repository; Pages republishes automatically within a minute or two.

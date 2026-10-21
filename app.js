@@ -7,11 +7,23 @@
   const $modal = document.getElementById('modal');
   const $modalBody = document.getElementById('modal-body');
   const $toasts = document.getElementById('toasts');
-  document.title = siteTitle;
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
+
+  // Language. English text is written in place; t() swaps in the Nepali from i18n.js,
+  // which is keyed by the English. {name}-style slots are filled from vars.
+  const NE = window.FAMILY_TREE_NE || {};
+  let lang = (() => { try { return localStorage.getItem('lang') === 'ne' ? 'ne' : 'en'; } catch { return 'en'; } })();
+  const NE_DIGITS = '०१२३४५६७८९';
+  const num = (v) => (lang === 'ne' && typeof v === 'number' ? String(v).replace(/\d/g, (d) => NE_DIGITS[d]) : v);
+  const t = (s, vars) => {
+    const out = (lang === 'ne' && NE[s]) || s;
+    return vars ? out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? num(vars[k]) : m)) : out;
+  };
+  document.documentElement.lang = lang;
+  document.title = t(siteTitle);
 
   if (!cfg.supabaseUrl || cfg.supabaseUrl.startsWith('YOUR_') || !cfg.supabaseAnonKey || cfg.supabaseAnonKey.startsWith('YOUR_')) {
     $app.innerHTML = `
@@ -23,7 +35,7 @@
     return;
   }
   if (!window.supabase) {
-    $app.innerHTML = '<div class="center-screen"><div class="panel narrow"><h1>Could not load</h1><p>Check your internet connection and reload the page.</p></div></div>';
+    $app.innerHTML = `<div class="center-screen"><div class="panel narrow"><h1>${t('Could not load')}</h1><p>${t('Check your internet connection and reload the page.')}</p></div></div>`;
     return;
   }
 
@@ -43,6 +55,8 @@
     collapsed: new Set(),
     view: 'tree',
     recovering: false,
+    screen: null, // which top-level screen is showing, so a language switch can redraw it
+    authMode: 'login',
   };
 
   const uid = () => state.session?.user?.id;
@@ -53,6 +67,7 @@
     member: { label: 'Member', can: ['See the whole tree', 'Add people', 'Edit themselves and people they added'] },
     viewer: { label: 'Viewer', can: ['See the whole tree'] },
   };
+  const roleLabel = (k) => t(ROLES[k].label);
   const role = () => state.profile?.role || 'member';
   const isAdmin = () => role() === 'admin';
   const canEditAll = () => role() === 'admin' || role() === 'editor';
@@ -72,9 +87,10 @@
 
   function friendlyError(err) {
     const m = err?.message || String(err);
-    if (/persons_user_idx|duplicate key/i.test(m)) return 'Your account is already linked to another person in the tree.';
-    if (/row-level security/i.test(m)) return 'You do not have permission to do that.';
-    if (/foreign key|violates.*persons_parent/i.test(m)) return 'This person still has children in the tree.';
+    if (/persons_user_idx|duplicate key/i.test(m)) return t('Your account is already linked to another person in the tree.');
+    if (/row-level security/i.test(m)) return t('You do not have permission to do that.');
+    if (/foreign key|violates.*persons_parent/i.test(m)) return t('This person still has children in the tree.');
+    if (/sending.*email|smtp/i.test(m)) return t("We couldn't send the email right now. Please try again later or ask the family admin.");
     return m;
   }
 
@@ -87,7 +103,7 @@
   function relationTo(s) { // "Wife of …" / "Husband of …" for a spouse
     const partner = partnerOf(s);
     const word = s.gender === 'female' ? 'Wife' : s.gender === 'male' ? 'Husband' : 'Spouse';
-    return partner ? `${word} of ${partner.full_name}` : word;
+    return partner ? t(`${word} of {name}`, { name: partner.full_name }) : t(word);
   }
   // Children of a spouse are the partner's children with this spouse as other parent.
   function childrenOf(p) {
@@ -119,12 +135,12 @@
     return found;
   }
 
-  const year = (d) => (d ? String(d).slice(0, 4) : '');
+  const year = (d) => (d ? String(num(Number(String(d).slice(0, 4)))) : '');
   function lifespan(p) {
     const b = year(p.birth_date);
     const d = year(p.death_date);
-    if (!p.is_living) return b || d ? `${b || '?'} – ${d || '?'}` : 'Late';
-    return b ? `b. ${b}` : '';
+    if (!p.is_living) return b || d ? `${b || '?'} – ${d || '?'}` : t('Late');
+    return b ? t('b. {year}', { year: b }) : '';
   }
 
   function initials(name) {
@@ -138,13 +154,22 @@
       : `<span class="avatar initials ${cls}" aria-hidden="true">${esc(initials(p.full_name))}</span>`;
   }
 
-  const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '');
+  // Nepali dates are built by hand: many phones' browsers have no Nepali date format.
+  const NE_MONTHS = ['जनवरी', 'फेब्रुअरी', 'मार्च', 'अप्रिल', 'मे', 'जुन', 'जुलाई', 'अगस्ट', 'सेप्टेम्बर', 'अक्टोबर', 'नोभेम्बर', 'डिसेम्बर'];
+  function fmtDate(d, month = 'long') {
+    if (!d) return '';
+    const dt = new Date(String(d).length > 10 ? d : `${d}T00:00:00`);
+    if (lang === 'ne') return `${num(dt.getDate())} ${NE_MONTHS[dt.getMonth()]} ${num(dt.getFullYear())}`;
+    return dt.toLocaleDateString(undefined, { year: 'numeric', month, day: 'numeric' });
+  }
   const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][((n % 100) - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th');
+  const genShort = (n) => t('{nth} gen', { nth: ordinal(n), n });
+  const genLong = (n) => t('{nth} generation', { nth: ordinal(n), n });
 
   async function resizeImage(file, max = 900) {
     let img;
     try { img = await createImageBitmap(file); } catch {
-      throw new Error('Could not read that image. Please choose a JPG or PNG photo.');
+      throw new Error(t('Could not read that image. Please choose a JPG or PNG photo.'));
     }
     const scale = Math.min(1, max / Math.max(img.width, img.height));
     const canvas = document.createElement('canvas');
@@ -152,7 +177,7 @@
     canvas.height = Math.round(img.height * scale);
     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
     return new Promise((resolve, reject) => canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Could not process that image.'))), 'image/jpeg', 0.85,
+      (b) => (b ? resolve(b) : reject(new Error(t('Could not process that image.')))), 'image/jpeg', 0.85,
     ));
   }
 
@@ -207,71 +232,83 @@
     if (state.recovering) return renderRecovery();
     if (!state.session) return renderAuth('login');
     const { data, error } = await sb.from('profiles').select('*').eq('id', uid()).maybeSingle();
-    if (error) return renderMessage('Something went wrong', error.message);
+    if (error) return renderMessage(t('Something went wrong'), error.message);
     state.profile = data;
     if (!data || data.status !== 'approved') return renderPending(data);
     try {
       await loadPersons();
     } catch (e) {
-      return renderMessage('Could not load the family tree', friendlyError(e));
+      return renderMessage(t('Could not load the family tree'), friendlyError(e));
     }
     renderApp();
   }
 
   function renderMessage(title, body) {
+    state.screen = 'message';
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow">
+        ${langRow()}
         <h1>${esc(title)}</h1><p>${esc(body)}</p>
-        <div class="actions"><button class="btn" data-action="logout">Log out</button></div>
+        <div class="actions"><button class="btn" data-action="logout">${t('Log out')}</button></div>
       </div></div>`;
   }
 
   // ---------------------------------------------------------------- auth screens
 
+  function langSwitch() {
+    const b = (code, label) => `<button type="button" class="${lang === code ? 'on' : ''}" data-action="lang" data-lang="${code}" lang="${code}" aria-pressed="${lang === code}">${label}</button>`;
+    return `<div class="seg lang-switch" role="group" aria-label="${t('Language')}">${b('en', 'English')}${b('ne', 'नेपाली')}</div>`;
+  }
+  const langRow = () => `<div class="lang-row">${langSwitch()}</div>`;
+
   function brandBlock() {
     return `
       <div class="brand-block">
         <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7zM24 34l-6-4M24 30l6-3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <h1>${esc(siteTitle)}</h1>
-        <p class="muted">A private space for our family to record who we are and where we come from.</p>
+        <h1>${esc(t(siteTitle))}</h1>
+        <p class="muted">${t('A private space for our family to record who we are and where we come from.')}</p>
       </div>`;
   }
 
   function renderAuth(mode) {
+    state.screen = 'auth';
+    state.authMode = mode;
+    const pwToggle = `<button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="${t('Show password')}">${t('Show')}</button>`;
     const tabs = `
       <div class="seg" role="tablist">
-        <button role="tab" class="${mode === 'login' ? 'on' : ''}" data-action="auth-mode" data-mode="login">Log in</button>
-        <button role="tab" class="${mode === 'signup' ? 'on' : ''}" data-action="auth-mode" data-mode="signup">Become a member</button>
+        <button role="tab" class="${mode === 'login' ? 'on' : ''}" data-action="auth-mode" data-mode="login">${t('Log in')}</button>
+        <button role="tab" class="${mode === 'signup' ? 'on' : ''}" data-action="auth-mode" data-mode="signup">${t('Become a member')}</button>
       </div>`;
     let form;
     if (mode === 'login') {
       form = `
         <form id="login-form" class="stack">
-          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
-          <label>Password<span class="pw-wrap"><input name="password" type="password" required autocomplete="current-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span></label>
-          <button class="btn primary" type="submit">Log in</button>
-          <button class="link" type="button" data-action="auth-mode" data-mode="forgot">Forgot password?</button>
+          <label>${t('Email')}<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
+          <label>${t('Password')}<span class="pw-wrap"><input name="password" type="password" required autocomplete="current-password" enterkeyhint="go">${pwToggle}</span></label>
+          <button class="btn primary" type="submit">${t('Log in')}</button>
+          <button class="link" type="button" data-action="auth-mode" data-mode="forgot">${t('Forgot password?')}</button>
         </form>`;
     } else if (mode === 'signup') {
       form = `
         <form id="signup-form" class="stack">
-          <label>Full name<input name="full_name" required autocomplete="name"></label>
-          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
-          <label>Password<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span><small class="muted">At least 8 characters.</small></label>
-          <button class="btn primary" type="submit">Request membership</button>
-          <p class="muted small">A family admin will check and approve your account before you can see the tree.</p>
+          <label>${t('Full name')}<input name="full_name" required autocomplete="name"></label>
+          <label>${t('Email')}<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
+          <label>${t('Password')}<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go">${pwToggle}</span><small class="muted">${t('At least 8 characters.')}</small></label>
+          <button class="btn primary" type="submit">${t('Request membership')}</button>
+          <p class="muted small">${t('A family admin will check and approve your account before you can see the tree.')}</p>
         </form>`;
     } else {
       form = `
         <form id="forgot-form" class="stack">
-          <p class="muted">Enter your email and we will send you a link to set a new password.</p>
-          <label>Email<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
-          <button class="btn primary" type="submit">Send reset link</button>
-          <button class="link" type="button" data-action="auth-mode" data-mode="login">Back to log in</button>
+          <p class="muted">${t('Enter your email and we will send you a link to set a new password.')}</p>
+          <label>${t('Email')}<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
+          <button class="btn primary" type="submit">${t('Send reset link')}</button>
+          <button class="link" type="button" data-action="auth-mode" data-mode="login">${t('Back to log in')}</button>
         </form>`;
     }
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow auth">
+        ${langRow()}
         ${brandBlock()}
         ${mode === 'forgot' ? '' : tabs}
         ${form}
@@ -279,30 +316,34 @@
   }
 
   function renderRecovery() {
+    state.screen = 'recovery';
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow">
-        <h1>Set a new password</h1>
+        ${langRow()}
+        <h1>${t('Set a new password')}</h1>
         <form id="recovery-form" class="stack">
-          <label>New password<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="Show password">Show</button></span></label>
-          <button class="btn primary" type="submit">Save password</button>
+          <label>${t('New password')}<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="${t('Show password')}">${t('Show')}</button></span></label>
+          <button class="btn primary" type="submit">${t('Save password')}</button>
         </form>
       </div></div>`;
   }
 
   function renderPending(profile) {
+    state.screen = 'pending';
     const name = profile?.full_name || state.session.user.email;
     const body = profile?.status === 'rejected'
-      ? '<p>Your membership request was not approved. If you think this is a mistake, please contact the family admin.</p>'
-      : `<p>Thank you for joining. A family admin needs to confirm who you are before you can see and add to the tree.</p>
-         <p class="muted">Come back later, or press <b>Check again</b> once the admin tells you that you are approved.</p>`;
+      ? `<p>${t('Your membership request was not approved. If you think this is a mistake, please contact the family admin.')}</p>`
+      : `<p>${t('Thank you for joining. A family admin needs to confirm who you are before you can see and add to the tree.')}</p>
+         <p class="muted">${t('Come back later, or press <b>Check again</b> once the admin tells you that you are approved.')}</p>`;
     $app.innerHTML = `
       <div class="center-screen"><div class="panel narrow">
-        <span class="pill ${profile?.status === 'rejected' ? 'bad' : 'wait'}">${profile?.status === 'rejected' ? 'Not approved' : 'Waiting for approval'}</span>
-        <h1>Namaste, ${esc(name)}</h1>
+        ${langRow()}
+        <span class="pill ${profile?.status === 'rejected' ? 'bad' : 'wait'}">${profile?.status === 'rejected' ? t('Not approved') : t('Waiting for approval')}</span>
+        <h1>${t('Namaste, {name}', { name: esc(name) })}</h1>
         ${body}
         <div class="actions">
-          <button class="btn" data-action="logout">Log out</button>
-          <button class="btn primary" data-action="recheck">Check again</button>
+          <button class="btn" data-action="logout">${t('Log out')}</button>
+          <button class="btn primary" data-action="recheck">${t('Check again')}</button>
         </div>
       </div></div>`;
   }
@@ -310,25 +351,27 @@
   // ---------------------------------------------------------------- main layout
 
   function renderApp() {
+    state.screen = 'app';
     const p = state.profile;
     if ((state.view === 'connect' && (myPerson() || !canContribute()))
       || (state.view === 'form' && !canContribute())
       || (state.view === 'admin' && !isAdmin())) state.view = 'tree';
     const nav = [
-      ['tree', 'Family tree'],
-      ...(myPerson() || !canContribute() ? [] : [['connect', 'Connect me']]),
-      ...(canContribute() ? [['form', 'Add person']] : []),
-      ...(isAdmin() ? [['admin', 'Members & roles']] : []),
+      ['tree', t('Family tree')],
+      ...(myPerson() || !canContribute() ? [] : [['connect', t('Connect me')]]),
+      ...(canContribute() ? [['form', t('Add person')]] : []),
+      ...(isAdmin() ? [['admin', t('Members & roles')]] : []),
     ];
     $app.innerHTML = `
       <header class="topbar">
-        <div class="brand"><svg class="brand-mark sm" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(siteTitle)}</div>
+        <div class="brand"><svg class="brand-mark sm" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 44V26M24 26c-6 0-11-4-11-10 0-5 4-9 9-9 1-3 4-5 7-4 4 1 7 4 7 8 3 1 5 4 4 8-1 4-5 7-9 7h-7z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(t(siteTitle))}</div>
         <nav class="tabs">
           ${nav.map(([v, label]) => `<button class="${state.view === v ? 'on' : ''}" data-action="view" data-view="${v}">${label}</button>`).join('')}
         </nav>
         <div class="who">
-          <span class="who-name">${esc(p.full_name || p.email)} <span class="pill tiny role-${role()}">${ROLES[role()].label}</span></span>
-          <button class="btn ghost sm" data-action="logout">Log out</button>
+          <span class="who-name">${esc(p.full_name || p.email)} <span class="pill tiny role-${role()}">${roleLabel(role())}</span></span>
+          ${langSwitch()}
+          <button class="btn ghost sm" data-action="logout">${t('Log out')}</button>
         </div>
       </header>
       <main id="main"></main>`;
@@ -359,31 +402,30 @@
     main.innerHTML = `
       <section class="toolbar">
         <div class="search">
-          <input id="search" type="search" placeholder="Search for a name…" autocomplete="off" aria-label="Search for a name">
+          <input id="search" type="search" placeholder="${t('Search for a name…')}" autocomplete="off" aria-label="${t('Search for a name…')}">
           <div id="results" class="results" hidden></div>
         </div>
         <div class="tool-btns">
-          ${me ? `<button class="btn sm" data-action="find-me">Find me</button>
-            <button class="btn primary sm" data-action="edit" data-id="${me.id}">✎ Edit my details</button>` : ''}
+          ${me ? `<button class="btn sm" data-action="find-me">${t('Find me')}</button>
+            <button class="btn primary sm" data-action="edit" data-id="${me.id}">✎ ${t('Edit my details')}</button>` : ''}
         </div>
       </section>
       ${me || !canContribute() ? '' : `<div class="callout">
-          <div><b>You're not in the tree yet.</b> Answer a few questions about yourself and your parents,
-          and we'll find where you connect to the family.</div>
-          <button class="btn primary sm" data-action="view" data-view="connect">Connect me to the tree</button>
+          <div><b>${t("You're not in the tree yet.")}</b> ${t("Answer a few questions about yourself and your parents, and we'll find where you connect to the family.")}</div>
+          <button class="btn primary sm" data-action="view" data-view="connect">${t('Connect me to the tree')}</button>
         </div>`}
       <div class="tree-bar">
-        <div class="seg two-way" role="group" aria-label="Tree layout">
-          <button class="${chart ? 'on' : ''}" data-action="tree-mode" data-mode="chart" aria-pressed="${chart}">Family chart</button>
-          <button class="${chart ? '' : 'on'}" data-action="tree-mode" data-mode="list" aria-pressed="${!chart}">List</button>
+        <div class="seg two-way" role="group" aria-label="${t('Tree layout')}">
+          <button class="${chart ? 'on' : ''}" data-action="tree-mode" data-mode="chart" aria-pressed="${chart}">${t('Family chart')}</button>
+          <button class="${chart ? '' : 'on'}" data-action="tree-mode" data-mode="list" aria-pressed="${!chart}">${t('List')}</button>
         </div>
-        <span class="stats muted">${state.persons.length} ${state.persons.length === 1 ? 'person' : 'people'} · ${gens} ${gens === 1 ? 'generation' : 'generations'}</span>
+        <span class="stats muted">${t(state.persons.length === 1 ? '{n} person' : '{n} people', { n: state.persons.length })} · ${t(gens === 1 ? '{n} generation' : '{n} generations', { n: gens })}</span>
         <div class="tool-btns">
-          ${chart ? `<button class="btn ghost sm icon" data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button>
-          <button class="btn ghost sm icon" data-action="zoom" data-dir="1" aria-label="Zoom in">+</button>
-          <button class="btn ghost sm" data-action="zoom" data-dir="0">Fit</button>` : ''}
-          <button class="btn ghost sm" data-action="expand-all">Expand all</button>
-          <button class="btn ghost sm" data-action="collapse-all">Collapse all</button>
+          ${chart ? `<button class="btn ghost sm icon" data-action="zoom" data-dir="-1" aria-label="${t('Zoom out')}">−</button>
+          <button class="btn ghost sm icon" data-action="zoom" data-dir="1" aria-label="${t('Zoom in')}">+</button>
+          <button class="btn ghost sm" data-action="zoom" data-dir="0">${t('Fit')}</button>` : ''}
+          <button class="btn ghost sm" data-action="expand-all">${t('Expand all')}</button>
+          <button class="btn ghost sm" data-action="collapse-all">${t('Collapse all')}</button>
         </div>
       </div>
       <div class="${chart ? 'tree-host' : 'tree'}" id="tree"></div>`;
@@ -395,7 +437,7 @@
     const el = document.getElementById('tree');
     if (!el) return;
     const roots = state.kids.get(null) || [];
-    if (!roots.length) { el.innerHTML = '<p class="muted">No one is in the tree yet.</p>'; return; }
+    if (!roots.length) { el.innerHTML = `<p class="muted">${t('No one is in the tree yet.')}</p>`; return; }
     if (state.treeMode !== 'chart') {
       el.innerHTML = `<ul>${roots.map((r) => nodeHtml(r, 1)).join('')}</ul>`;
       return;
@@ -423,14 +465,14 @@
   function pcard(p, gen) {
     const mine = p.user_id && p.user_id === uid();
     const spouse = isSpouse(p);
-    const tag = spouse ? (p.gender === 'female' ? 'Wife' : p.gender === 'male' ? 'Husband' : 'Spouse') : `${ordinal(gen)} gen`;
+    const tag = spouse ? t(p.gender === 'female' ? 'Wife' : p.gender === 'male' ? 'Husband' : 'Spouse') : genShort(gen);
     return `
       <button class="pcard ${p.gender || ''}${spouse ? ' spouse' : ''}${mine ? ' me' : ''}${p.is_living ? '' : ' late'}"
         data-action="open" data-id="${p.id}" id="n-${p.id}">
         ${avatar(p, 'lg')}
         <span class="pc-name">${esc(p.full_name)}</span>
         <span class="pc-meta">${esc(lifespan(p)) || '&nbsp;'}</span>
-        <span class="pc-tag">${mine ? '<b>You</b> · ' : ''}${tag}</span>
+        <span class="pc-tag">${mine ? `<b>${t('You')}</b> · ` : ''}${tag}</span>
       </button>`;
   }
 
@@ -446,7 +488,7 @@
           ${sp.map((s) => `<span class="wed" aria-hidden="true"><i></i></span>${pcard(s, gen)}`).join('')}
         </div>
         ${kids.length ? `<button class="kids-toggle" data-action="toggle" data-id="${p.id}" aria-expanded="${open}"
-          aria-label="${open ? 'Hide' : 'Show'} ${kids.length} ${kids.length === 1 ? 'child' : 'children'} of ${esc(p.full_name)}">${open ? '−' : '+'} ${kids.length}</button>` : ''}
+          aria-label="${t(open ? 'Hide children of {name}' : 'Show children of {name}', { name: esc(p.full_name) })}">${open ? '−' : '+'} ${num(kids.length)}</button>` : ''}
         ${kids.length && open ? `<ul>${kids.map((k) => unitHtml(k, gen + 1)).join('')}</ul>` : ''}
       </li>`;
   }
@@ -549,18 +591,18 @@
     const sp = spousesOf(p.id);
     const open = !state.collapsed.has(p.id);
     const mine = p.user_id && p.user_id === uid();
-    const meta = [`${ordinal(gen)} gen`, lifespan(p), kids.length ? `${kids.length} ${kids.length === 1 ? 'child' : 'children'}` : '']
+    const meta = [genShort(gen), lifespan(p), kids.length ? t(kids.length === 1 ? '{n} child' : '{n} children', { n: kids.length }) : '']
       .filter(Boolean).join(' · ');
     return `
       <li>
         <div class="node">
           ${kids.length
-            ? `<button class="twisty" data-action="toggle" data-id="${p.id}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} children of ${esc(p.full_name)}">${open ? '−' : '+'}</button>`
+            ? `<button class="twisty" data-action="toggle" data-id="${p.id}" aria-expanded="${open}" aria-label="${t(open ? 'Hide children of {name}' : 'Show children of {name}', { name: esc(p.full_name) })}">${open ? '−' : '+'}</button>`
             : '<span class="twisty leaf" aria-hidden="true"></span>'}
           <button class="card${mine ? ' me' : ''}${p.is_living ? '' : ' late'}" data-action="open" data-id="${p.id}" id="n-${p.id}">
             ${avatar(p)}
             <span class="card-text">
-              <span class="name">${esc(p.full_name)}${mine ? ' <span class="pill tiny">You</span>' : ''}</span>
+              <span class="name">${esc(p.full_name)}${mine ? ` <span class="pill tiny">${t('You')}</span>` : ''}</span>
               <span class="meta">${esc(meta)}</span>
             </span>
           </button>
@@ -596,7 +638,7 @@
 
   function pathLabel(p) {
     if (isSpouse(p)) return relationTo(p);
-    return lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ') || 'Top ancestor';
+    return lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ') || t('Top ancestor');
   }
 
   function updateSearch(q) {
@@ -612,7 +654,7 @@
             <span><span class="name">${esc(p.full_name)}</span>
             <span class="path">${esc(pathLabel(p))}</span></span>
           </button>`).join('')
-      : '<p class="muted pad">No one found with that name.</p>';
+      : `<p class="muted pad">${t('No one found with that name.')}</p>`;
   }
 
   // ---------------------------------------------------------------- person details
@@ -630,44 +672,46 @@
     const partners = spouse ? [partnerOf(p)].filter(Boolean) : spousesOf(p.id);
     const parent = !spouse && p.parent_id && state.byId.get(p.parent_id);
     const other = !spouse && p.other_parent_id && state.byId.get(p.other_parent_id);
-    const childWord = p.gender === 'female' ? 'Daughter' : p.gender === 'male' ? 'Son' : 'Child';
+    const childWord = t(p.gender === 'female' ? 'Daughter' : p.gender === 'male' ? 'Son' : 'Child');
     const subtitle = spouse ? relationTo(p)
-      : parent ? `${childWord} of ${parent.full_name}${other ? ` and ${other.full_name}` : ''}` : 'Top ancestor';
-    const partnerHeading = spouse ? (partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse')
-      : partners.length > 1 ? 'Spouses' : partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse';
+      : parent ? t(other ? '{child} of {parent} and {other}' : '{child} of {parent}', { child: childWord, parent: parent.full_name, other: other?.full_name })
+        : t('Top ancestor');
+    const partnerHeading = t(spouse ? (partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse')
+      : partners.length > 1 ? 'Spouses' : partners[0]?.gender === 'female' ? 'Wife' : partners[0]?.gender === 'male' ? 'Husband' : 'Spouse');
     const rows = [
-      ['Born', [fmtDate(p.birth_date), p.birth_place].filter(Boolean).join(', ')],
-      ['Died', p.is_living ? '' : fmtDate(p.death_date) || 'Late'],
-      ['Occupation', p.occupation],
-      ['Lives in', p.current_address],
-      ['Phone', p.phone],
-      ['Email', p.email],
+      [t('Born'), [fmtDate(p.birth_date), p.birth_place].filter(Boolean).join(', ')],
+      [t('Died'), p.is_living ? '' : fmtDate(p.death_date) || t('Late')],
+      [t('Occupation'), p.occupation],
+      [t('Lives in'), p.current_address],
+      [t('Phone'), p.phone],
+      [t('Email'), p.email],
     ].filter(([, v]) => v);
     const photo = p.photo_path && state.photos.get(p.photo_path);
+    $modalBody.dataset.id = id;
     $modalBody.innerHTML = `
-      <button class="close" data-action="close-modal" aria-label="Close">×</button>
+      <button class="close" data-action="close-modal" aria-label="${t('Close')}">×</button>
       <div class="detail-head">
-        ${photo ? `<img class="photo" src="${esc(photo)}" alt="Photo of ${esc(p.full_name)}">` : `<span class="photo initials">${esc(initials(p.full_name))}</span>`}
+        ${photo ? `<img class="photo" src="${esc(photo)}" alt="${t('Photo of {name}', { name: esc(p.full_name) })}">` : `<span class="photo initials">${esc(initials(p.full_name))}</span>`}
         <div>
-          <p class="eyebrow">${ordinal(generation(p))} generation${spouse ? ' · married in' : ''}${p.is_living ? '' : ' · Late'}</p>
+          <p class="eyebrow">${genLong(generation(p))}${spouse ? ` · ${t('married in')}` : ''}${p.is_living ? '' : ` · ${t('Late')}`}</p>
           <h2>${esc(p.full_name)}</h2>
           <p class="muted">${esc(subtitle)}</p>
         </div>
       </div>
       <div class="detail-actions">
-        ${canEdit(p) ? `<button class="btn primary" data-action="edit" data-id="${p.id}">✎ Edit details</button>` : ''}
-        ${canContribute() ? `<button class="btn" data-action="add-child" data-id="${p.id}">＋ Add child</button>` : ''}
-        ${canContribute() && !spouse ? `<button class="btn" data-action="add-spouse" data-id="${p.id}">＋ Add spouse</button>` : ''}
-        <button class="btn ghost" data-action="show-in-tree" data-id="${p.id}">Show in tree</button>
+        ${canEdit(p) ? `<button class="btn primary" data-action="edit" data-id="${p.id}">✎ ${t('Edit details')}</button>` : ''}
+        ${canContribute() ? `<button class="btn" data-action="add-child" data-id="${p.id}">＋ ${t('Add child')}</button>` : ''}
+        ${canContribute() && !spouse ? `<button class="btn" data-action="add-spouse" data-id="${p.id}">＋ ${t('Add spouse')}</button>` : ''}
+        <button class="btn ghost" data-action="show-in-tree" data-id="${p.id}">${t('Show in tree')}</button>
       </div>
-      ${path.length > 1 ? `<nav class="crumbs" aria-label="Ancestry">${path.map((a, i) => (i === path.length - 1
+      ${path.length > 1 ? `<nav class="crumbs" aria-label="${t('Ancestry')}">${path.map((a, i) => (i === path.length - 1
         ? `<span>${esc(a.full_name)}</span>`
         : `<button class="link" data-action="open" data-id="${a.id}">${esc(a.full_name)}</button><span class="sep">${isSpouse(path[i + 1]) ? '⚭' : '›'}</span>`)).join('')}</nav>` : ''}
       ${rows.length ? `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
       ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
       ${partners.length ? `<h3>${partnerHeading}</h3>${chipList(partners)}` : ''}
-      ${kids.length ? `<h3>Children</h3>${chipList(kids)}` : ''}
-      ${canEditAll() && !kids.length ? `<div class="danger-zone"><button class="btn danger sm" data-action="delete" data-id="${p.id}">Delete ${esc(p.full_name)}</button></div>` : ''}`;
+      ${kids.length ? `<h3>${t('Children')}</h3>${chipList(kids)}` : ''}
+      ${canEditAll() && !kids.length ? `<div class="danger-zone"><button class="btn danger sm" data-action="delete" data-id="${p.id}">${t('Delete {name}', { name: esc(p.full_name) })}</button></div>` : ''}`;
     if (!$modal.open) $modal.showModal();
     $modal.scrollTop = 0;
   }
@@ -681,13 +725,13 @@
       .map((p) => ({ id: p.id, label: lineage(p).map((a) => a.full_name).join(' › '), name: p.full_name }))
       .sort((a, b) => a.label.localeCompare(b.label));
     const shown = items.filter((i) => !f || i.name.toLowerCase().includes(f) || i.id === selected);
-    const rootOpt = canEditAll() ? `<option value="" ${!selected ? 'selected' : ''}>— None (a new top ancestor) —</option>` : '<option value="" disabled ' + (!selected ? 'selected' : '') + '>— Choose the parent —</option>';
+    const rootOpt = canEditAll() ? `<option value="" ${!selected ? 'selected' : ''}>${t('— None (a new top ancestor) —')}</option>` : `<option value="" disabled ${!selected ? 'selected' : ''}>${t('— Choose the parent —')}</option>`;
     return rootOpt + shown.map((i) => `<option value="${i.id}" ${i.id === selected ? 'selected' : ''}>${esc(i.label)}</option>`).join('');
   }
 
   function otherParentOptions(parentId, selected) {
     const sp = parentId ? spousesOf(parentId) : [];
-    return `<option value="">— Not recorded —</option>${sp.map((s) => `
+    return `<option value="">${t('— Not recorded —')}</option>${sp.map((s) => `
       <option value="${s.id}" ${s.id === selected ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}`;
   }
 
@@ -719,70 +763,70 @@
     const v = (k) => esc(p?.[k] ?? '');
     main.innerHTML = `
       <section class="panel form-panel">
-        <h2>${p ? `Edit ${esc(p.full_name)}` : spouseMode ? `Add ${esc(partner.full_name)}'s spouse` : 'Add a family member'}</h2>
+        <h2>${p ? t('Edit {name}', { name: esc(p.full_name) }) : spouseMode ? t("Add {name}'s spouse", { name: esc(partner.full_name) }) : t('Add a family member')}</h2>
         <form id="person-form" class="stack" data-edit-id="${p ? p.id : ''}" data-spouse-of="${spouseMode ? partner.id : ''}">
           ${spouseMode ? `
           <fieldset>
-            <legend>Married to</legend>
+            <legend>${t('Married to')}</legend>
             <div class="match">
               ${avatar(partner)}
               <div class="match-text"><div class="name">${esc(partner.full_name)}</div>
                 <div class="muted small">${esc(pathLabel(partner))}</div></div>
             </div>
-            <p class="muted small">They'll appear side by side in the family chart, with lines from both down to their children.</p>
+            <p class="muted small">${t("They'll appear side by side in the family chart, with lines from both down to their children.")}</p>
           </fieldset>` : `
           <fieldset>
-            <legend>Place in the family</legend>
-            <p class="muted small">Choose this person's father or mother from the family line. Ancestors are shown in order, from the oldest.</p>
-            <input id="parent-filter" type="search" placeholder="Type a name to narrow the list…" aria-label="Filter parents">
-            <label class="sr">Parent<select name="parent_id" id="parent-select" ${canEditAll() ? '' : 'required'}>${parentOptions(excluded, selected)}</select></label>
+            <legend>${t('Place in the family')}</legend>
+            <p class="muted small">${t("Choose this person's father or mother from the family line. Ancestors are shown in order, from the oldest.")}</p>
+            <input id="parent-filter" type="search" placeholder="${t('Type a name to narrow the list…')}" aria-label="${t('Filter parents')}">
+            <label class="sr">${t('Parent')}<select name="parent_id" id="parent-select" ${canEditAll() ? '' : 'required'}>${parentOptions(excluded, selected)}</select></label>
             <div id="parent-preview" class="path-preview"></div>
-            <label id="other-wrap" hidden>Other parent (their husband or wife)
+            <label id="other-wrap" hidden>${t('Other parent (their husband or wife)')}
               <select name="other_parent_id" id="other-select">${otherParentOptions(parentForOther, otherPick)}</select>
-              <small class="muted">Add a spouse from the parent's pop-up if they aren't listed.</small>
+              <small class="muted">${t("Add a spouse from the parent's pop-up if they aren't listed.")}</small>
             </label>
           </fieldset>`}
 
           <fieldset>
-            <legend>Personal details</legend>
+            <legend>${t('Personal details')}</legend>
             <div class="grid">
-              <label class="span2">Full name *<input name="full_name" required value="${v('full_name')}"></label>
-              <label>Gender
+              <label class="span2">${t('Full name *')}<input name="full_name" required value="${v('full_name')}"></label>
+              <label>${t('Gender')}
                 <select name="gender">
                   <option value="">—</option>
-                  ${['male', 'female', 'other'].map((g) => `<option value="${g}" ${defaultGender === g ? 'selected' : ''}>${g[0].toUpperCase() + g.slice(1)}</option>`).join('')}
+                  ${genderOptions(defaultGender)}
                 </select>
               </label>
-              <label>Date of birth<input name="birth_date" type="date" value="${v('birth_date')}"></label>
-              <label class="check span2"><input type="checkbox" name="is_living" id="is-living" ${!p || p.is_living ? 'checked' : ''}> Living</label>
-              <label id="death-wrap" ${!p || p.is_living ? 'hidden' : ''}>Date of death<input name="death_date" type="date" value="${v('death_date')}"></label>
-              <label>Place of birth<input name="birth_place" value="${v('birth_place')}"></label>
-              <label>Lives in<input name="current_address" value="${v('current_address')}" placeholder="City, country"></label>
-              <label>Occupation<input name="occupation" value="${v('occupation')}"></label>
-              <label>Phone<input name="phone" type="tel" value="${v('phone')}"></label>
-              <label>Email<input name="email" type="email" value="${v('email')}"></label>
-              <label class="span2">About<textarea name="bio" rows="4" placeholder="Stories, achievements, memories…">${v('bio')}</textarea></label>
+              <label>${t('Date of birth')}<input name="birth_date" type="date" value="${v('birth_date')}"></label>
+              <label class="check span2"><input type="checkbox" name="is_living" id="is-living" ${!p || p.is_living ? 'checked' : ''}> ${t('Living')}</label>
+              <label id="death-wrap" ${!p || p.is_living ? 'hidden' : ''}>${t('Date of death')}<input name="death_date" type="date" value="${v('death_date')}"></label>
+              <label>${t('Place of birth')}<input name="birth_place" value="${v('birth_place')}"></label>
+              <label>${t('Lives in')}<input name="current_address" value="${v('current_address')}" placeholder="${t('City, country')}"></label>
+              <label>${t('Occupation')}<input name="occupation" value="${v('occupation')}"></label>
+              <label>${t('Phone')}<input name="phone" type="tel" value="${v('phone')}"></label>
+              <label>${t('Email')}<input name="email" type="email" value="${v('email')}"></label>
+              <label class="span2">${t('About')}<textarea name="bio" rows="4" placeholder="${t('Stories, achievements, memories…')}">${v('bio')}</textarea></label>
             </div>
           </fieldset>
 
           <fieldset>
-            <legend>Photo</legend>
+            <legend>${t('Photo')}</legend>
             <div class="photo-row">
               <span id="photo-preview">${photo ? `<img class="photo" src="${esc(photo)}" alt="">` : '<span class="photo initials">?</span>'}</span>
               <div class="stack tight">
                 <input name="photo" id="photo-input" type="file" accept="image/*">
-                ${photo ? '<label class="check"><input type="checkbox" name="remove_photo"> Remove current photo</label>' : ''}
-                <small class="muted">The photo is resized before it is uploaded.</small>
+                ${photo ? `<label class="check"><input type="checkbox" name="remove_photo"> ${t('Remove current photo')}</label>` : ''}
+                <small class="muted">${t('The photo is resized before it is uploaded.')}</small>
               </div>
             </div>
           </fieldset>
 
           ${canClaim ? `<label class="check claim"><input type="checkbox" name="is_me" ${p && me && me.id === p.id ? 'checked' : ''}>
-            <span><b>This is me.</b> Link this person to my account so I can always edit my own details.</span></label>` : ''}
+            <span><b>${t('This is me.')}</b> ${t('Link this person to my account so I can always edit my own details.')}</span></label>` : ''}
 
           <div class="actions">
-            <button class="btn ghost" type="button" data-action="view" data-view="tree">Cancel</button>
-            <button class="btn primary" type="submit">${p ? 'Save changes' : 'Add to family tree'}</button>
+            <button class="btn ghost" type="button" data-action="view" data-view="tree">${t('Cancel')}</button>
+            <button class="btn primary" type="submit">${p ? t('Save changes') : t('Add to family tree')}</button>
           </div>
         </form>
       </section>`;
@@ -796,8 +840,8 @@
     if (!sel || !out) return;
     const parent = state.byId.get(sel.value);
     out.innerHTML = parent
-      ? `${lineage(parent).map((a) => `<span>${esc(a.full_name)}</span>`).join('<span class="sep">›</span>')}<span class="sep">›</span><span class="new">this person</span>`
-      : (canEditAll() ? '<span class="muted">Will be added as a new top ancestor.</span>' : '');
+      ? `${lineage(parent).map((a) => `<span>${esc(a.full_name)}</span>`).join('<span class="sep">›</span>')}<span class="sep">›</span><span class="new">${t('this person')}</span>`
+      : (canEditAll() ? `<span class="muted">${t('Will be added as a new top ancestor.')}</span>` : '');
   }
 
   async function savePerson(form) {
@@ -824,8 +868,8 @@
       email: str('email'),
       bio: str('bio'),
     };
-    if (!rec.full_name) return toast('Please enter a name.', 'error');
-    if (!spouseOf && !rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast('Please choose a parent.', 'error');
+    if (!rec.full_name) return toast(t('Please enter a name.'), 'error');
+    if (!spouseOf && !rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast(t('Please choose a parent.'), 'error');
     if (rec.other_parent_id && !spousesOf(rec.parent_id).some((x) => x.id === rec.other_parent_id)) rec.other_parent_id = null;
 
     if (form.querySelector('[name=is_me]')) {
@@ -834,7 +878,7 @@
     }
 
     btn.disabled = true;
-    btn.textContent = 'Saving…';
+    btn.textContent = t('Saving…');
     const oldPhoto = existing?.photo_path;
     try {
       const file = fd.get('photo');
@@ -862,28 +906,28 @@
         sb.storage.from(PHOTO_BUCKET).remove([oldPhoto]); // best effort
       }
       await loadPersons();
-      toast(existing ? 'Changes saved.' : `${rec.full_name} was added to the tree.`, 'ok');
+      toast(existing ? t('Changes saved.') : t('{name} was added to the tree.', { name: rec.full_name }), 'ok');
       setView('tree');
       reveal(savedId);
     } catch (e) {
       toast(friendlyError(e), 'error');
       btn.disabled = false;
-      btn.textContent = existing ? 'Save changes' : 'Add to family tree';
+      btn.textContent = existing ? t('Save changes') : t('Add to family tree');
     }
   }
 
   async function deletePerson(id) {
     const p = state.byId.get(id);
     const sp = spousesOf(id);
-    const also = sp.length ? `\n\nTheir ${sp.length === 1 ? 'spouse' : 'spouses'} (${sp.map((x) => x.full_name).join(', ')}) will be deleted too.` : '';
-    if (!p || !confirm(`Delete ${p.full_name} from the family tree? This cannot be undone.${also}`)) return;
+    const also = sp.length ? `\n\n${t(sp.length === 1 ? 'Their spouse ({names}) will be deleted too.' : 'Their spouses ({names}) will be deleted too.', { names: sp.map((x) => x.full_name).join(', ') })}` : '';
+    if (!p || !confirm(t('Delete {name} from the family tree? This cannot be undone.', { name: p.full_name }) + also)) return;
     const { error } = await sb.from('persons').delete().eq('id', id);
     if (error) return toast(friendlyError(error), 'error');
     if (p.photo_path) sb.storage.from(PHOTO_BUCKET).remove([p.photo_path]);
     $modal.close();
     await loadPersons();
     renderView();
-    toast(`${p.full_name} was deleted.`, 'ok');
+    toast(t('{name} was deleted.', { name: p.full_name }), 'ok');
   }
 
   // ---------------------------------------------------------------- guided "connect me" builder
@@ -916,11 +960,11 @@
     const w = state.wiz;
     const anchor = w.anchorId && state.byId.get(w.anchorId);
     const items = [
-      { label: w.me.full_name || 'You', cls: 'you' },
+      { label: w.me.full_name || t('You'), cls: 'you' },
       ...w.chain.map((a) => ({ label: a.full_name, cls: 'new' })),
       anchor ? { label: anchor.full_name, cls: 'found' } : { label: '?', cls: 'unknown' },
     ];
-    return `<ol class="wiz-chain" aria-label="Your line so far">${items.map((it) => `
+    return `<ol class="wiz-chain" aria-label="${t('Your line so far')}">${items.map((it) => `
       <li class="${it.cls}"><span class="dot">${it.cls === 'unknown' ? '?' : esc(initials(it.label))}</span><span class="lbl">${esc(it.label)}</span></li>`).join('')}
     </ol>`;
   }
@@ -933,8 +977,8 @@
         ${avatar(p)}
         <div class="match-text">
           <div class="name">${esc(p.full_name)} <span class="muted small">${esc(lifespan(p))}</span></div>
-          <div class="muted small">${isSpouse(p) ? esc(relationTo(p)) : path ? `Descendant of ${esc(path)}` : 'Top ancestor'}</div>
-          ${kids.length ? `<div class="muted small">Parent of ${esc(kids.join(', '))}</div>` : ''}
+          <div class="muted small">${isSpouse(p) ? esc(relationTo(p)) : path ? t('Descendant of {path}', { path: esc(path) }) : t('Top ancestor')}</div>
+          ${kids.length ? `<div class="muted small">${t('Parent of {names}', { names: esc(kids.join(', ')) })}</div>` : ''}
         </div>
         <button class="btn primary sm" data-action="${action}" data-id="${p.id}">${buttonLabel}</button>
       </div>`;
@@ -949,70 +993,69 @@
     if (w.step === 'me') {
       const m = w.me;
       body = `
-        <h2>Let's connect you to the family tree</h2>
-        <p class="muted">First, tell us about yourself. Next we'll ask about your parents and look for them in the tree.</p>
+        <h2>${t("Let's connect you to the family tree")}</h2>
+        <p class="muted">${t("First, tell us about yourself. Next we'll ask about your parents and look for them in the tree.")}</p>
         <form id="wiz-me" class="stack">
           <div class="grid">
-            <label class="span2">Your full name *<input name="full_name" id="wiz-me-name" required value="${esc(m.full_name)}"></label>
-            <label>Gender
+            <label class="span2">${t('Your full name *')}<input name="full_name" id="wiz-me-name" required value="${esc(m.full_name)}"></label>
+            <label>${t('Gender')}
               <select name="gender"><option value="">—</option>
-                ${['male', 'female', 'other'].map((g) => `<option value="${g}" ${m.gender === g ? 'selected' : ''}>${g[0].toUpperCase() + g.slice(1)}</option>`).join('')}
+                ${genderOptions(m.gender)}
               </select></label>
-            <label>Date of birth<input name="birth_date" type="date" value="${esc(m.birth_date)}"></label>
-            <label>Place of birth<input name="birth_place" value="${esc(m.birth_place)}"></label>
-            <label>Lives in<input name="current_address" value="${esc(m.current_address)}" placeholder="City, country"></label>
-            <label class="span2">Your photo<input name="photo" type="file" accept="image/*">
-              ${m.photo ? `<small class="muted">Selected: ${esc(m.photo.name)}</small>` : ''}</label>
+            <label>${t('Date of birth')}<input name="birth_date" type="date" value="${esc(m.birth_date)}"></label>
+            <label>${t('Place of birth')}<input name="birth_place" value="${esc(m.birth_place)}"></label>
+            <label>${t('Lives in')}<input name="current_address" value="${esc(m.current_address)}" placeholder="${t('City, country')}"></label>
+            <label class="span2">${t('Your photo')}<input name="photo" type="file" accept="image/*">
+              ${m.photo ? `<small class="muted">${t('Selected: {name}', { name: esc(m.photo.name) })}</small>` : ''}</label>
           </div>
           <div id="wiz-already"></div>
-          <div class="actions"><button class="btn primary" type="submit">Next: your parents</button></div>
+          <div class="actions"><button class="btn primary" type="submit">${t('Next: your parents')}</button></div>
         </form>`;
     } else if (w.step === 'ancestor') {
       const i = w.chain.length;
       const prev = i ? w.chain[i - 1].full_name : null;
-      const who = prev ? `${esc(prev)}'s` : 'your';
       body = `
-        <p class="eyebrow">Step ${i + 2}</p>
-        <h2>Who is ${who} father or mother?</h2>
-        <p class="muted">Start typing their name. If they're already in the tree, choose them and you're connected.</p>
-        <input id="wiz-search" type="search" autocomplete="off" placeholder="Type a name, e.g. Santa Bahadur" value="${esc(w.query)}">
+        <p class="eyebrow">${t('Step {n}', { n: i + 2 })}</p>
+        <h2>${prev ? t("Who is {name}'s father or mother?", { name: esc(prev) }) : t('Who is your father or mother?')}</h2>
+        <p class="muted">${t("Start typing their name. If they're already in the tree, choose them and you're connected.")}</p>
+        <input id="wiz-search" type="search" autocomplete="off" placeholder="${t('Type a name, e.g. Santa Bahadur')}" value="${esc(w.query)}">
         <div id="wiz-matches" class="matches"></div>
         ${i < MAX_NEW_GENERATIONS ? `
         <details class="wiz-new" ${w.query ? 'open' : ''}>
-          <summary>Not in the tree yet? Add them</summary>
+          <summary>${t('Not in the tree yet? Add them')}</summary>
           <form id="wiz-new" class="stack">
             <div class="seg two">
-              <label><input type="radio" name="relation" value="male" checked> Father</label>
-              <label><input type="radio" name="relation" value="female"> Mother</label>
+              <label><input type="radio" name="relation" value="male" checked> ${t('Father')}</label>
+              <label><input type="radio" name="relation" value="female"> ${t('Mother')}</label>
             </div>
             <div class="grid">
-              <label class="span2">Full name *<input name="full_name" id="wiz-new-name" required value="${esc(w.query)}"></label>
-              <label>Date of birth<input name="birth_date" type="date"></label>
-              <label class="check"><input type="checkbox" name="is_living" checked> Living</label>
+              <label class="span2">${t('Full name *')}<input name="full_name" id="wiz-new-name" required value="${esc(w.query)}"></label>
+              <label>${t('Date of birth')}<input name="birth_date" type="date"></label>
+              <label class="check"><input type="checkbox" name="is_living" checked> ${t('Living')}</label>
             </div>
-            <div class="actions"><button class="btn" type="submit">Add, then ask about their parents</button></div>
+            <div class="actions"><button class="btn" type="submit">${t('Add, then ask about their parents')}</button></div>
           </form>
-        </details>` : '<p class="muted">That\'s many generations. Ask a family admin to help connect the rest.</p>'}
-        <div class="actions spread"><button class="btn ghost" data-action="wiz-back">Back</button><span></span></div>`;
+        </details>` : `<p class="muted">${t("That's many generations. Ask a family admin to help connect the rest.")}</p>`}
+        <div class="actions spread"><button class="btn ghost" data-action="wiz-back">${t('Back')}</button><span></span></div>`;
     } else {
       const anchor = state.byId.get(w.anchorId);
       const existing = lineage(anchor);
       const fresh = [...w.chain].reverse();
       body = `
-        <p class="eyebrow">Last step</p>
-        <h2>Check your line</h2>
-        <p class="muted">This is how you'll appear in the family tree. ${fresh.length ? `${fresh.length} new ${fresh.length === 1 ? 'person' : 'people'} will be added along with you.` : ''}</p>
+        <p class="eyebrow">${t('Last step')}</p>
+        <h2>${t('Check your line')}</h2>
+        <p class="muted">${t("This is how you'll appear in the family tree.")} ${fresh.length ? t(fresh.length === 1 ? '{n} new person will be added along with you.' : '{n} new people will be added along with you.', { n: fresh.length }) : ''}</p>
         <ol class="wiz-path">
           ${existing.map((a, i) => {
             const other = i === existing.length - 1 && w.anchorOther && state.byId.get(w.anchorOther);
-            return `<li class="old">${esc(a.full_name)}${other ? ` ⚭ ${esc(other.full_name)}` : ''}<span class="tag">in tree</span></li>`;
+            return `<li class="old">${esc(a.full_name)}${other ? ` ⚭ ${esc(other.full_name)}` : ''}<span class="tag">${t('in tree')}</span></li>`;
           }).join('')}
-          ${fresh.map((a) => `<li class="new">${esc(a.full_name)}<span class="tag">new</span></li>`).join('')}
-          <li class="you">${esc(w.me.full_name)}<span class="tag">you</span></li>
+          ${fresh.map((a) => `<li class="new">${esc(a.full_name)}<span class="tag">${t('new')}</span></li>`).join('')}
+          <li class="you">${esc(w.me.full_name)}<span class="tag">${t('you')}</span></li>
         </ol>
         <div class="actions spread">
-          <button class="btn ghost" data-action="wiz-back">Back</button>
-          <button class="btn primary" data-action="wiz-confirm">Add me to the family tree</button>
+          <button class="btn ghost" data-action="wiz-back">${t('Back')}</button>
+          <button class="btn primary" data-action="wiz-confirm">${t('Add me to the family tree')}</button>
         </div>`;
     }
 
@@ -1031,8 +1074,8 @@
     if (!box) return;
     const hits = nameMatches(name, { unlinkedOnly: true });
     box.innerHTML = hits.length
-      ? `<div class="callout plain"><div><b>Are you already in the tree?</b> Someone may have added you. If so, choose yourself.</div></div>
-         <div class="matches">${hits.map((p) => matchCard(p, 'wiz-claim', 'This is me')).join('')}</div>`
+      ? `<div class="callout plain"><div><b>${t('Are you already in the tree?')}</b> ${t('Someone may have added you. If so, choose yourself.')}</div></div>
+         <div class="matches">${hits.map((p) => matchCard(p, 'wiz-claim', t('This is me'))).join('')}</div>`
       : '';
   }
 
@@ -1043,14 +1086,14 @@
     if (tokens(q).length === 0) { box.innerHTML = ''; return; }
     const hits = nameMatches(q);
     box.innerHTML = hits.length
-      ? hits.map((p) => matchCard(p, 'wiz-pick', 'Yes, this is them')).join('')
-      : `<p class="muted small pad">No one called “${esc(q)}” in the tree yet. You can add them below.</p>`;
+      ? hits.map((p) => matchCard(p, 'wiz-pick', t('Yes, this is them'))).join('')
+      : `<p class="muted small pad">${t('No one called “{q}” in the tree yet. You can add them below.', { q: esc(q) })}</p>`;
   }
 
   async function confirmConnect(btn) {
     const w = state.wiz;
     btn.disabled = true;
-    btn.textContent = 'Adding…';
+    btn.textContent = t('Adding…');
     try {
       let parentId = w.anchorId;
       let otherId = w.anchorOther || null;
@@ -1080,11 +1123,11 @@
       state.view = 'tree';
       renderApp();
       reveal(data.id);
-      toast('Welcome to the family tree!', 'ok');
+      toast(t('Welcome to the family tree!'), 'ok');
     } catch (e) {
       toast(friendlyError(e), 'error');
       btn.disabled = false;
-      btn.textContent = 'Add me to the family tree';
+      btn.textContent = t('Add me to the family tree');
       await loadPersons(); // some ancestors may have been saved before the error
     }
   }
@@ -1097,14 +1140,14 @@
     state.view = 'form';
     renderApp();
     renderForm({ editId: id });
-    toast('You are now linked to your place in the tree. Check your details and save.', 'ok');
+    toast(t('You are now linked to your place in the tree. Check your details and save.'), 'ok');
   }
 
   // ---------------------------------------------------------------- admin
 
   async function renderAdmin() {
     const main = document.getElementById('main');
-    main.innerHTML = '<p class="muted">Loading members…</p>';
+    main.innerHTML = `<p class="muted">${t('Loading members…')}</p>`;
     const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
     if (state.view !== 'admin') return;
     if (error) { main.innerHTML = `<p class="muted">${esc(error.message)}</p>`; return; }
@@ -1112,8 +1155,8 @@
     state.memberFilter ||= { q: '', role: 'all' };
     main.innerHTML = `
       <section class="panel">
-        <h2>Roles</h2>
-        <p class="muted small">Every approved member has one role. Change someone's role from the list below.</p>
+        <h2>${t('Roles')}</h2>
+        <p class="muted small">${t("Every approved member has one role. Change someone's role from the list below.")}</p>
         <div class="role-grid" id="role-grid"></div>
       </section>
       <div id="member-lists"></div>`;
@@ -1122,8 +1165,8 @@
 
   function roleSelect(m, attrs = '') {
     const current = m.role || 'member';
-    return `<select class="role-select" aria-label="Role for ${esc(m.full_name || m.email)}" ${attrs}>
-      ${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${k === current ? 'selected' : ''}>${r.label}</option>`).join('')}
+    return `<select class="role-select" aria-label="${t('Role for {name}', { name: esc(m.full_name || m.email) })}" ${attrs}>
+      ${Object.keys(ROLES).map((k) => `<option value="${k}" ${k === current ? 'selected' : ''}>${roleLabel(k)}</option>`).join('')}
     </select>`;
   }
 
@@ -1135,8 +1178,8 @@
       const n = approved.filter((m) => (m.role || 'member') === k).length;
       return `
         <button class="role-card ${f.role === k ? 'on' : ''}" data-action="role-filter" data-role="${k}" aria-pressed="${f.role === k}">
-          <span class="role-head"><span class="pill tiny role-${k}">${r.label}</span><span class="count">${n}</span></span>
-          <ul>${r.can.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+          <span class="role-head"><span class="pill tiny role-${k}">${roleLabel(k)}</span><span class="count">${num(n)}</span></span>
+          <ul>${r.can.map((c) => `<li>${esc(t(c))}</li>`).join('')}</ul>
         </button>`;
     }).join('');
 
@@ -1150,49 +1193,49 @@
       const person = linked.get(m.id);
       let controls;
       if (self) {
-        controls = `<span class="pill tiny role-${m.role}">${ROLES[m.role].label}</span><span class="muted small">Another admin can change your role</span>`;
+        controls = `<span class="pill tiny role-${m.role}">${roleLabel(m.role)}</span><span class="muted small">${t('Another admin can change your role')}</span>`;
       } else if (m.status === 'pending') {
         controls = `
-          <label class="inline">Approve as ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
-          <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">Reject</button>
-          <button class="btn primary sm" data-action="member" data-op="approve" data-id="${m.id}">Approve</button>`;
+          <label class="inline">${t('Approve as')} ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
+          <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">${t('Reject')}</button>
+          <button class="btn primary sm" data-action="member" data-op="approve" data-id="${m.id}">${t('Approve')}</button>`;
       } else if (m.status === 'approved') {
         controls = `
           ${roleSelect(m, `data-role-for="${m.id}"`)}
-          <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">Revoke access</button>`;
+          <button class="btn danger sm" data-action="member" data-op="reject" data-id="${m.id}">${t('Revoke access')}</button>`;
       } else {
         controls = `
-          <label class="inline">Approve as ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
-          <button class="btn sm" data-action="member" data-op="approve" data-id="${m.id}">Approve</button>`;
+          <label class="inline">${t('Approve as')} ${roleSelect(m, `id="role-new-${m.id}"`)}</label>
+          <button class="btn sm" data-action="member" data-op="approve" data-id="${m.id}">${t('Approve')}</button>`;
       }
       return `
         <div class="member">
           <div class="member-info">
-            <div class="name">${esc(m.full_name || '(no name)')} ${self ? '<span class="pill tiny">You</span>' : ''}</div>
-            <div class="muted small">${esc(m.email || '')} · joined ${new Date(m.created_at).toLocaleDateString()}</div>
-            ${person ? `<div class="small">In tree as <button class="link" data-action="open" data-id="${person.id}">${esc(lineage(person).map((a) => a.full_name).join(' › '))}</button></div>` : ''}
+            <div class="name">${esc(m.full_name || t('(no name)'))} ${self ? `<span class="pill tiny">${t('You')}</span>` : ''}</div>
+            <div class="muted small">${esc(m.email || '')} · ${t('joined {date}', { date: fmtDate(m.created_at, 'short') })}</div>
+            ${person ? `<div class="small">${t('In tree as')} <button class="link" data-action="open" data-id="${person.id}">${esc(lineage(person).map((a) => a.full_name).join(' › '))}</button></div>` : ''}
           </div>
           <div class="actions">${controls}</div>
         </div>`;
     };
     const section = (title, list, empty) => `
       <section class="panel">
-        <h2>${title} <span class="count">${list.length}</span></h2>
+        <h2>${title} <span class="count">${num(list.length)}</span></h2>
         ${list.length ? list.map(row).join('') : `<p class="muted">${empty}</p>`}
       </section>`;
     const pending = all.filter((m) => m.status === 'pending' && matches(m));
     const members = approved.filter(matches);
     const rejected = all.filter((m) => m.status === 'rejected' && matches(m));
-    const filterNote = f.role === 'all' ? '' : ` · showing ${ROLES[f.role].label.toLowerCase()}s <button class="link" data-action="role-filter" data-role="all">show all</button>`;
+    const filterNote = f.role === 'all' ? '' : ` · ${t('showing {role}s', { role: roleLabel(f.role).toLowerCase() })} <button class="link" data-action="role-filter" data-role="all">${t('show all')}</button>`;
     const hadFocus = document.activeElement?.id === 'member-search';
     document.getElementById('member-lists').innerHTML = `
       <div class="toolbar member-tools">
-        <div class="search"><input id="member-search" type="search" placeholder="Search members by name or email…" value="${esc(f.q)}" aria-label="Search members"></div>
-        <span class="muted small">${approved.length} approved${filterNote}</span>
+        <div class="search"><input id="member-search" type="search" placeholder="${t('Search members by name or email…')}" value="${esc(f.q)}" aria-label="${t('Search members')}"></div>
+        <span class="muted small">${t('{n} approved', { n: approved.length })}${filterNote}</span>
       </div>
-      ${section('Waiting for approval', pending, q ? 'No one waiting matches your search.' : 'No one is waiting. New sign-ups will appear here.')}
-      ${section('Members', members, q || f.role !== 'all' ? 'No members match.' : 'No members yet.')}
-      ${rejected.length ? section('Not approved', rejected, '') : ''}`;
+      ${section(t('Waiting for approval'), pending, q ? t('No one waiting matches your search.') : t('No one is waiting. New sign-ups will appear here.'))}
+      ${section(t('Members'), members, q || f.role !== 'all' ? t('No members match.') : t('No members yet.'))}
+      ${rejected.length ? section(t('Not approved'), rejected, '') : ''}`;
     if (hadFocus) {
       const s = document.getElementById('member-search');
       s.focus();
@@ -1202,26 +1245,47 @@
 
   async function memberOp(id, op, newRole) {
     const m = (state.members || []).find((x) => x.id === id);
-    const name = m?.full_name || m?.email || 'this member';
+    const name = m?.full_name || m?.email || t('this member');
     let patch;
     let msg;
     if (op === 'approve') {
       const r = document.getElementById(`role-new-${id}`)?.value || 'member';
       patch = { status: 'approved', role: r };
-      msg = `${name} approved as ${ROLES[r].label}.`;
+      msg = t('{name} approved as {role}.', { name, role: roleLabel(r) });
     } else if (op === 'reject') {
-      if (m?.status === 'approved' && !confirm(`Remove ${name}'s access to the family tree?`)) return;
+      if (m?.status === 'approved' && !confirm(t("Remove {name}'s access to the family tree?", { name }))) return;
       patch = { status: 'rejected', role: 'member' };
-      msg = m?.status === 'approved' ? 'Access removed.' : 'Request rejected.';
+      msg = m?.status === 'approved' ? t('Access removed.') : t('Request rejected.');
     } else {
       patch = { role: newRole };
-      msg = `${name} is now ${ROLES[newRole].label === 'Admin' ? 'an' : 'a'} ${ROLES[newRole].label}.`;
+      msg = t(newRole === 'admin' ? '{name} is now an {role}.' : '{name} is now a {role}.', { name, role: roleLabel(newRole) });
     }
     const { error } = await sb.from('profiles').update(patch).eq('id', id);
     if (error) { toast(friendlyError(error), 'error'); renderMemberLists(); return; }
     Object.assign(m, patch);
     toast(msg, 'ok');
     renderMemberLists();
+  }
+
+  // ---------------------------------------------------------------- language
+
+  function genderOptions(selected) {
+    return ['male', 'female', 'other'].map((g) => `<option value="${g}" ${selected === g ? 'selected' : ''}>${t(g[0].toUpperCase() + g.slice(1))}</option>`).join('');
+  }
+
+  // Redraw whatever is on screen in the new language. Unsaved typing in an open form is lost.
+  function setLang(next) {
+    if (next === lang) return;
+    lang = next;
+    try { localStorage.setItem('lang', lang); } catch { /* private mode */ }
+    document.documentElement.lang = lang;
+    document.title = t(siteTitle);
+    const openId = $modal.open ? $modalBody.dataset.id : null;
+    if (state.screen === 'auth') renderAuth(state.authMode);
+    else if (state.screen === 'recovery') renderRecovery();
+    else if (state.screen === 'pending') renderPending(state.profile);
+    else if (state.screen === 'app') { renderApp(); if (openId) openDetail(openId); }
+    else route();
   }
 
   // ---------------------------------------------------------------- events
@@ -1237,12 +1301,13 @@
     const { action, id } = el.dataset;
     switch (action) {
       case 'auth-mode': renderAuth(el.dataset.mode); break;
+      case 'lang': setLang(el.dataset.lang); break;
       case 'toggle-pw': {
         const input = el.parentElement.querySelector('input');
         const show = input.type === 'password';
         input.type = show ? 'text' : 'password';
-        el.textContent = show ? 'Hide' : 'Show';
-        el.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        el.textContent = show ? t('Hide') : t('Show');
+        el.setAttribute('aria-label', show ? t('Hide password') : t('Show password'));
         input.focus();
         break;
       }
@@ -1294,7 +1359,7 @@
         renderMemberLists();
         break;
       case 'wiz-claim':
-        if (confirm(`Link your account to ${state.byId.get(id)?.full_name}? Only do this if it is really you.`)) claimPerson(id);
+        if (confirm(t('Link your account to {name}? Only do this if it is really you.', { name: state.byId.get(id)?.full_name }))) claimPerson(id);
         break;
       case 'wiz-pick': {
         // Picking a spouse (e.g. your mother who married in) connects you through their partner.
@@ -1344,8 +1409,9 @@
     if (e.target.id === 'parent-select') { updateParentPreview(); updateOtherParent(); }
     if (e.target.dataset.roleFor) {
       const m = state.members.find((x) => x.id === e.target.dataset.roleFor);
-      const label = ROLES[e.target.value].label;
-      if (confirm(`Change ${m.full_name || m.email}'s role to ${label}?\n\n${label}s can: ${ROLES[e.target.value].can.join(', ').toLowerCase()}.`)) {
+      const label = roleLabel(e.target.value);
+      const can = ROLES[e.target.value].can.map((c) => t(c)).join(', ').toLowerCase();
+      if (confirm(`${t("Change {name}'s role to {role}?", { name: m.full_name || m.email, role: label })}\n\n${t('{role}s can: {list}.', { role: label, list: can })}`)) {
         memberOp(m.id, 'role', e.target.value);
       } else {
         e.target.value = m.role;
@@ -1401,7 +1467,7 @@
       case 'login-form':
         await busy(async () => {
           const { error } = await sb.auth.signInWithPassword({ email: fd.get('email'), password: fd.get('password') });
-          if (error) toast(error.message === 'Invalid login credentials' ? 'Wrong email or password.' : error.message, 'error');
+          if (error) toast(error.message === 'Invalid login credentials' ? t('Wrong email or password.') : error.message, 'error');
         });
         break;
       case 'signup-form':
@@ -1414,10 +1480,9 @@
           if (error) return toast(error.message, 'error');
           if (!data.session) {
             $app.innerHTML = `<div class="center-screen"><div class="panel narrow">
-              <h1>Check your email</h1>
-              <p>We sent a confirmation link to <b>${esc(fd.get('email'))}</b>. Open it to confirm your address,
-              then log in. A family admin will approve your membership after that.</p>
-              <div class="actions"><button class="btn primary" data-action="auth-mode" data-mode="login">Back to log in</button></div>
+              <h1>${t('Check your email')}</h1>
+              <p>${t('We sent a confirmation link to <b>{email}</b>. Open it to confirm your address, then log in. A family admin will approve your membership after that.', { email: esc(fd.get('email')) })}</p>
+              <div class="actions"><button class="btn primary" data-action="auth-mode" data-mode="login">${t('Back to log in')}</button></div>
             </div></div>`;
           }
         });
@@ -1425,8 +1490,8 @@
       case 'forgot-form':
         await busy(async () => {
           const { error } = await sb.auth.resetPasswordForEmail(fd.get('email'), { redirectTo: location.origin + location.pathname });
-          if (error) return toast(error.message, 'error');
-          toast('If that email has an account, a reset link is on its way.', 'ok');
+          if (error) return toast(friendlyError(error), 'error');
+          toast(t('If that email has an account, a reset link is on its way.'), 'ok');
           renderAuth('login');
         });
         break;
@@ -1435,7 +1500,7 @@
           const { error } = await sb.auth.updateUser({ password: fd.get('password') });
           if (error) return toast(error.message, 'error');
           state.recovering = false;
-          toast('Password updated.', 'ok');
+          toast(t('Password updated.'), 'ok');
           route();
         });
         break;

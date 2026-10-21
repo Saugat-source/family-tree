@@ -17,8 +17,8 @@
   --male: #3f6f9f;
   --female: #b04a6b;
   --chart-bg: #f2ebdf;
-  --serif: 'Fraunces', Georgia, serif;
-  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --serif: 'Fraunces', 'Noto Serif Devanagari', Georgia, serif;
+  --sans: 'Inter', 'Noto Sans Devanagari', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -153,6 +153,11 @@ input, select, textarea { font-size: 16px; } /* stops iPhones zooming in on focu
 .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-2); border-radius: 10px; padding: 4px; margin-bottom: 1.25rem; }
 .seg button { font: 600 .88rem var(--sans); border: 0; background: transparent; color: var(--muted); padding: .55rem; border-radius: 8px; cursor: pointer; }
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+/* ---------- language switch */
+.seg.lang-switch { display: inline-grid; grid-template-columns: auto auto; gap: 2px; margin: 0; padding: 3px; }
+.seg.lang-switch button { padding: .3rem .6rem; font-size: .8rem; }
+.lang-row { display: flex; justify-content: flex-end; margin: -.5rem -.25rem .75rem 0; }
 
 /* ---------- top bar */
 .topbar {
