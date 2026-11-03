@@ -298,4 +298,7 @@ window.FAMILY_TREE_NE = {
   'Voice recording does not work in this browser. You can attach an audio file instead.': 'यो ब्राउजरमा आवाज रेकर्ड हुँदैन। बरु अडियो फाइल जोड्न सक्नुहुन्छ।',
   'The microphone is blocked. Allow it in your browser settings to record.': 'माइक्रोफोन रोकिएको छ। रेकर्ड गर्न ब्राउजर सेटिङमा अनुमति दिनुहोस्।',
   'Stop the recording first.': 'पहिले रेकर्डिङ रोक्नुहोस्।',
+  'Tap a message to delete it.': 'सन्देश मेटाउन त्यसमा थिच्नुहोस्।',
+  'Message options': 'सन्देशका विकल्प',
+  'Delete': 'मेटाउनुहोस्',
 };

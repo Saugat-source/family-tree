@@ -1335,6 +1335,7 @@
   const chat = {
     mounted: false, open: false, lang: null, messages: [], urls: new Map(), channel: null,
     hasOlder: false, unread: 0, pending: null, recorder: null, recTimer: null, sending: false,
+    selected: null, // the message whose Delete button is showing
   };
   const ICON = {
     chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
@@ -1408,7 +1409,7 @@
       <header class="chat-head">
         <div>
           <h2 id="chat-title">${t('Family chat')}</h2>
-          <p class="muted small">${t('Only approved family members can see this chat.')}</p>
+          <p class="muted small">${t('Only approved family members can see this chat.')} ${t('Tap a message to delete it.')}</p>
         </div>
         <button class="close" data-action="chat-close" aria-label="${t('Close chat')}">×</button>
       </header>
@@ -1499,15 +1500,23 @@
     const name = person?.full_name || m.sender_name || t('Family member');
     const time = NE_NUM(new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     const canDelete = mine || isAdmin();
+    const selected = canDelete && chat.selected === m.id;
     return `
       ${newDay ? `<div class="chat-day"><span>${esc(chatDayLabel(m.created_at))}</span></div>` : ''}
       <div class="chat-msg${mine ? ' mine' : ''}${grouped ? ' grouped' : ''}" data-msg="${m.id}">
         ${mine ? '' : `<span class="chat-ava">${grouped ? '' : (person ? avatar(person, 'sm') : `<span class="avatar initials sm">${esc(initials(name))}</span>`)}</span>`}
-        <div class="chat-bubble">
-          ${mine || grouped ? '' : `<div class="chat-name">${esc(name)}</div>`}
-          ${chatAttachmentHtml(m)}
-          ${m.body ? `<div class="chat-text">${esc(m.body)}</div>` : ''}
-          <div class="chat-meta">${time}${canDelete ? `<button class="chat-del" data-action="chat-delete" data-id="${m.id}" aria-label="${t('Delete message')}" title="${t('Delete message')}">×</button>` : ''}</div>
+        <div class="chat-col">
+          <div class="chat-bubble${canDelete ? ' can-select' : ''}${selected ? ' selected' : ''}"
+            ${canDelete ? `data-action="chat-select" data-id="${m.id}" role="button" tabindex="0" aria-expanded="${selected}" aria-label="${t('Message options')}"` : ''}>
+            ${mine || grouped ? '' : `<div class="chat-name">${esc(name)}</div>`}
+            ${chatAttachmentHtml(m)}
+            ${m.body ? `<div class="chat-text">${esc(m.body)}</div>` : ''}
+            <div class="chat-meta">${time}</div>
+          </div>
+          ${selected ? `<div class="chat-actions">
+            <button class="btn danger sm" data-action="chat-delete" data-id="${m.id}">🗑 ${t('Delete')}</button>
+            <button class="btn ghost sm" data-action="chat-select" data-id="${m.id}">${t('Cancel')}</button>
+          </div>` : ''}
         </div>
       </div>`;
   }
@@ -1730,6 +1739,7 @@
     const { error } = await sb.from('messages').delete().eq('id', id);
     if (error) { toast(friendlyError(error), 'error'); return; }
     if (m.file_path) sb.storage.from(CHAT_BUCKET).remove([m.file_path]); // best effort
+    chat.selected = null;
     chatRemoveLocal(id);
   }
 
@@ -1748,6 +1758,13 @@
       case 'chat-unattach': chatSetPending(null); break;
       case 'chat-record': chatToggleRecord(); break;
       case 'chat-delete': chatDelete(el.dataset.id); break;
+      case 'chat-select': {
+        // Tapping a photo link, video or audio player uses it instead of selecting the message.
+        if (e.target.closest('a, video, audio') && el.classList.contains('chat-bubble')) break;
+        chat.selected = chat.selected === el.dataset.id ? null : el.dataset.id;
+        chatRenderList(false);
+        break;
+      }
       case 'chat-older': chatLoad(true); break;
       default: break;
     }
@@ -1761,7 +1778,8 @@
   document.addEventListener('input', (e) => { if (e.target.id === 'chat-text') chatGrow(e.target); });
   document.addEventListener('submit', (e) => { if (e.target.id === 'chat-form') { e.preventDefault(); chatSend(); } });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && chat.open && !$modal.open) chatClose();
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.chat-bubble.can-select')) { e.preventDefault(); e.target.click(); return; }
+    if (e.key === 'Escape' && chat.open && !$modal.open) { if (chat.selected) { chat.selected = null; chatRenderList(false); } else chatClose(); }
     // Enter sends on computers; on phones Enter makes a new line and the send button sends.
     if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey && !isTouch() && !e.isComposing) {
       e.preventDefault();
