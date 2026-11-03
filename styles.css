@@ -595,3 +595,8 @@ audio.chat-att { width: 240px; max-width: 100%; height: 40px; }
 .chat-bubble.selected { outline: 2px solid var(--bad); outline-offset: 2px; }
 .chat-actions { display: flex; gap: .35rem; margin-top: .35rem; }
 .chat-actions .btn.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
+
+/* our own yes/no box (replaces the browser's confirm, which some phones block) */
+dialog.confirm-box { width: min(380px, calc(100vw - 32px)); padding: 1.25rem; }
+.confirm-text { white-space: pre-line; margin: 0 0 1.1rem; font-size: 1rem; line-height: 1.45; }
+.btn.danger.solid { background: var(--bad); color: #fff; border-color: var(--bad); }

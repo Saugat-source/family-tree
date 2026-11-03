@@ -301,4 +301,7 @@ window.FAMILY_TREE_NE = {
   'Tap a message to delete it.': 'सन्देश मेटाउन त्यसमा थिच्नुहोस्।',
   'Message options': 'सन्देशका विकल्प',
   'Delete': 'मेटाउनुहोस्',
+  'OK': 'ठीक छ',
+  'Remove access': 'पहुँच हटाउनुहोस्',
+  'Change role': 'भूमिका बदल्नुहोस्',
 };

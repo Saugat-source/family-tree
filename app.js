@@ -177,6 +177,31 @@
   const genShort = (n) => t('{nth} gen', { nth: ordinal(n), n });
   const genLong = (n) => t('{nth} generation', { nth: ordinal(n), n });
 
+  // Our own yes/no box. The browser's built-in confirm box is silently blocked in some in-app
+  // browsers (it then counts as "Cancel"), which made Delete and similar buttons do nothing.
+  function askConfirm(message, { ok = t('OK'), danger = false } = {}) {
+    return new Promise((resolve) => {
+      const d = document.createElement('dialog');
+      d.className = 'confirm-box';
+      d.innerHTML = `
+        <p class="confirm-text"></p>
+        <div class="actions">
+          <button type="button" class="btn ghost" data-v="no">${t('Cancel')}</button>
+          <button type="button" class="btn ${danger ? 'danger solid' : 'primary'}" data-v="yes">${esc(ok)}</button>
+        </div>`;
+      d.querySelector('.confirm-text').textContent = message;
+      d.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-v]');
+        if (b) d.close(b.dataset.v);
+        else if (e.target === d) d.close('no'); // tap outside the box
+      });
+      d.addEventListener('close', () => { resolve(d.returnValue === 'yes'); d.remove(); });
+      document.body.appendChild(d);
+      d.showModal();
+      d.querySelector('[data-v=yes]').focus();
+    });
+  }
+
   async function resizeImage(file, max = 900) {
     let img;
     try { img = await createImageBitmap(file); } catch {
@@ -942,7 +967,7 @@
     const p = state.byId.get(id);
     const sp = spousesOf(id);
     const also = sp.length ? `\n\n${t(sp.length === 1 ? 'Their spouse ({names}) will be deleted too.' : 'Their spouses ({names}) will be deleted too.', { names: sp.map((x) => x.full_name).join(', ') })}` : '';
-    if (!p || !confirm(t('Delete {name} from the family tree? This cannot be undone.', { name: p.full_name }) + also)) return;
+    if (!p || !(await askConfirm(t('Delete {name} from the family tree? This cannot be undone.', { name: p.full_name }) + also, { ok: t('Delete'), danger: true }))) return;
     const { error } = await sb.from('persons').delete().eq('id', id);
     if (error) return toast(friendlyError(error), 'error');
     if (p.photo_path) sb.storage.from(PHOTO_BUCKET).remove([p.photo_path]);
@@ -1288,7 +1313,7 @@
       patch = { status: 'approved', role: r };
       msg = t('{name} approved as {role}.', { name, role: roleLabel(r) });
     } else if (op === 'reject') {
-      if (m?.status === 'approved' && !confirm(t("Remove {name}'s access to the family tree?", { name }))) return;
+      if (m?.status === 'approved' && !(await askConfirm(t("Remove {name}'s access to the family tree?", { name }), { ok: t('Remove access'), danger: true }))) return;
       patch = { status: 'rejected', role: 'member' };
       msg = m?.status === 'approved' ? t('Access removed.') : t('Request rejected.');
     } else {
@@ -1735,7 +1760,7 @@
 
   async function chatDelete(id) {
     const m = chat.messages.find((x) => x.id === id);
-    if (!m || !confirm(t('Delete this message for everyone?'))) return;
+    if (!m || !(await askConfirm(t('Delete this message for everyone?'), { ok: t('Delete'), danger: true }))) return;
     const { error } = await sb.from('messages').delete().eq('id', id);
     if (error) { toast(friendlyError(error), 'error'); return; }
     if (m.file_path) sb.storage.from(CHAT_BUCKET).remove([m.file_path]); // best effort
@@ -1779,7 +1804,7 @@
   document.addEventListener('submit', (e) => { if (e.target.id === 'chat-form') { e.preventDefault(); chatSend(); } });
   document.addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.chat-bubble.can-select')) { e.preventDefault(); e.target.click(); return; }
-    if (e.key === 'Escape' && chat.open && !$modal.open) { if (chat.selected) { chat.selected = null; chatRenderList(false); } else chatClose(); }
+    if (e.key === 'Escape' && chat.open && !$modal.open && !document.querySelector('dialog.confirm-box')) { if (chat.selected) { chat.selected = null; chatRenderList(false); } else chatClose(); }
     // Enter sends on computers; on phones Enter makes a new line and the send button sends.
     if (e.target.id === 'chat-text' && e.key === 'Enter' && !e.shiftKey && !isTouch() && !e.isComposing) {
       e.preventDefault();
@@ -1864,7 +1889,7 @@
         renderMemberLists();
         break;
       case 'wiz-claim':
-        if (confirm(t('Link your account to {name}? Only do this if it is really you.', { name: state.byId.get(id)?.full_name }))) claimPerson(id);
+        if (await askConfirm(t('Link your account to {name}? Only do this if it is really you.', { name: state.byId.get(id)?.full_name }), { ok: t('This is me') })) claimPerson(id);
         break;
       case 'wiz-pick': {
         // Picking a spouse (e.g. your mother who married in) connects you through their partner.
@@ -1916,11 +1941,10 @@
       const m = state.members.find((x) => x.id === e.target.dataset.roleFor);
       const label = roleLabel(e.target.value);
       const can = ROLES[e.target.value].can.map((c) => t(c)).join(', ').toLowerCase();
-      if (confirm(`${t("Change {name}'s role to {role}?", { name: m.full_name || m.email, role: label })}\n\n${t('{role}s can: {list}.', { role: label, list: can })}`)) {
-        memberOp(m.id, 'role', e.target.value);
-      } else {
-        e.target.value = m.role;
-      }
+      const sel = e.target;
+      const next = sel.value;
+      askConfirm(`${t("Change {name}'s role to {role}?", { name: m.full_name || m.email, role: label })}\n\n${t('{role}s can: {list}.', { role: label, list: can })}`, { ok: t('Change role') })
+        .then((yes) => { if (yes) memberOp(m.id, 'role', next); else sel.value = m.role; });
     }
     if (e.target.id === 'is-living') document.getElementById('death-wrap').hidden = e.target.checked;
     if (e.target.id === 'photo-input' && e.target.files[0]) {
