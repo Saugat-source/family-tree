@@ -14,6 +14,7 @@ A private family tree website. Relatives sign up, an admin approves them, and ap
 | `i18n.js` | The Nepali wording for every English line on the site |
 | `supabase-schema.sql` | Creates the database, roles, access rules, photo storage and the starting family line |
 | `supabase-update-roles.sql` | Only for databases created before roles were added; new projects don't need it |
+| `supabase-update-spouses.sql`, `supabase-update-site-settings.sql`, `supabase-update-chat.sql`, `supabase-update-hardening.sql` | Later updates, run in that order on databases created before each feature; new projects don't need them |
 
 ---
 
@@ -90,7 +91,7 @@ You only do step 6 once. After that you approve everyone from the **Members & ro
   - turn off **Authentication → Sign In / Providers → Email → Confirm email** (you approve everyone by hand anyway), or
   - connect your own email service under **Authentication → SMTP Settings**.
 - **Free plan pause**: Supabase pauses free projects after about a week with no activity. If that happens, open the Supabase dashboard and click **Restore**. Regular visits keep it awake.
-- **Backups**: export your data now and then from **Table Editor → persons → Export to CSV**.
+- **Backups**: the free plan has no automatic backups. An admin can press **Members & roles → Backup → Download backup** to save everything (people, members, chat, settings) in one file. Keep it private: it contains contact details.
 - **Changing the site name or welcome line**: an admin opens **Members & roles → Site settings** on the website, edits the English and Nepali boxes and saves. No code change needed. (`siteTitle` in `config.js` is only used if the database can't be reached.)
 - **Languages**: everyone can switch between English and नेपाली with the buttons at the top; the site remembers the choice on that phone or computer. To fix a Nepali wording, change the right-hand side of its line in `i18n.js`.
 - **Updating the site**: change files in the GitHub repository; Pages republishes automatically within a minute or two.
