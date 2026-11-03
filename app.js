@@ -51,6 +51,11 @@
   }
 
   const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  // Columns the site reads. Phone, email and address are not among them: they come from
+  // person_contact(), which only answers for the person, whoever added them, editors and admins.
+  const PERSON_COLS = 'id,parent_id,other_parent_id,spouse_of,full_name,gender,birth_date,is_living,death_date,'
+    + 'birth_place,occupation,spouse_name,bio,photo_path,user_id,created_by,created_at,updated_at,claim_requested_by';
+  const SITE_COLS = 'id,title_en,title_ne,tagline_en,tagline_ne';
   const PHOTO_BUCKET = 'photos';
 
   const state = {
@@ -73,10 +78,10 @@
   const uid = () => state.session?.user?.id;
   // Roles, most powerful first. Kept in step with the database rules in supabase-schema.sql.
   const ROLES = {
-    admin: { label: 'Admin', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone', 'Approve members and change roles'] },
-    editor: { label: 'Editor', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone'] },
-    member: { label: 'Member', can: ['See the whole tree', 'Add people', 'Edit themselves and people they added'] },
-    viewer: { label: 'Viewer', can: ['See the whole tree'] },
+    admin: { label: 'Admin', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone', 'Approve members and change roles', 'Use the family chat'] },
+    editor: { label: 'Editor', can: ['See the whole tree', 'Add people and new top ancestors', 'Edit and delete anyone', 'Use the family chat'] },
+    member: { label: 'Member', can: ['See the whole tree', 'Add people', 'Edit themselves and people they added', 'Use the family chat'] },
+    viewer: { label: 'Viewer', can: ['See the whole tree', 'Use the family chat'] },
   };
   const roleLabel = (k) => t(ROLES[k].label);
   const role = () => state.profile?.role || 'member';
@@ -103,6 +108,15 @@
     if (/foreign key|violates.*persons_parent/i.test(m)) return t('This person still has children in the tree.');
     if (/sending.*email|smtp/i.test(m)) return t("We couldn't send the email right now. Please try again later or ask the family admin.");
     return m;
+  }
+
+  // Phone, email and address: only for the person themselves, whoever added them, editors and admins.
+  const canSeeContact = (p) => canEditAll() || (p && (p.user_id === uid() || p.created_by === uid()));
+  async function loadContact(p) {
+    if (!p || !canSeeContact(p)) return null;
+    const { data, error } = await sb.rpc('person_contact', { target: p.id });
+    if (error) return ('phone' in p) ? { phone: p.phone, email: p.email, current_address: p.current_address } : null;
+    return (data && data[0]) || { phone: null, email: null, current_address: null };
   }
 
   // Spouses married into the family: they hang off their partner instead of a parent.
@@ -190,12 +204,21 @@
           <button type="button" class="btn ${danger ? 'danger solid' : 'primary'}" data-v="yes">${esc(ok)}</button>
         </div>`;
       d.querySelector('.confirm-text').textContent = message;
+      let done = false;
+      const finish = (answer) => { // acts on the tap itself, not on the dialog's later 'close' event
+        if (done) return;
+        done = true;
+        if (d.open) d.close();
+        d.remove();
+        resolve(answer === 'yes');
+      };
       d.addEventListener('click', (e) => {
-        const b = e.target.closest('button[data-v]');
-        if (b) d.close(b.dataset.v);
-        else if (e.target === d) d.close('no'); // tap outside the box
+        const btn = e.target.closest('button[data-v]');
+        if (btn) finish(btn.dataset.v);
+        else if (e.target === d) finish('no'); // tap outside the box
       });
-      d.addEventListener('close', () => { resolve(d.returnValue === 'yes'); d.remove(); });
+      d.addEventListener('cancel', (e) => { e.preventDefault(); finish('no'); }); // Esc key / back gesture
+      d.addEventListener('close', () => finish('no'));
       document.body.appendChild(d);
       d.showModal();
       d.querySelector('[data-v=yes]').focus();
@@ -220,9 +243,12 @@
   // ---------------------------------------------------------------- data
 
   async function loadPersons() {
-    const { data, error } = await sb.from('persons').select('*')
+    const query = (cols) => sb.from('persons').select(cols)
       .order('birth_date', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
+    let { data, error } = await query(PERSON_COLS);
+    // Before the November 2026 database update there is no claim column; fall back to all columns.
+    if (error && error.code === '42703') ({ data, error } = await query('*'));
     if (error) throw error;
     state.persons = data || [];
     state.byId = new Map(state.persons.map((p) => [p.id, p]));
@@ -250,6 +276,7 @@
       const { data: urls } = await sb.storage.from(PHOTO_BUCKET).createSignedUrls(paths, 60 * 60 * 6);
       for (const u of urls || []) if (u.signedUrl) state.photos.set(u.path, u.signedUrl);
     }
+    state.signedAt = Date.now();
   }
 
   // ---------------------------------------------------------------- routing
@@ -265,7 +292,7 @@
   });
 
   // Read the site name before the first screen; if the table isn't there yet, keep the built-in name.
-  const siteLoaded = sb.from('site_settings').select('*').eq('id', 1).maybeSingle()
+  const siteLoaded = sb.from('site_settings').select(SITE_COLS).eq('id', 1).maybeSingle()
     .then(({ data }) => { if (data) setSite(data); })
     .catch(() => {});
 
@@ -337,7 +364,7 @@
         <form id="signup-form" class="stack">
           <label>${t('Full name')}<input name="full_name" required autocomplete="name"></label>
           <label>${t('Email')}<input name="email" type="email" required autocomplete="email" autocapitalize="off" enterkeyhint="next"></label>
-          <label>${t('Password')}<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go">${pwToggle}</span><small class="muted">${t('At least 8 characters.')}</small></label>
+          <label>${t('Password')}<span class="pw-wrap"><input name="password" type="password" required minlength="10" autocomplete="new-password" enterkeyhint="go">${pwToggle}</span><small class="muted">${t('At least 10 characters.')}</small></label>
           <button class="btn primary" type="submit">${t('Request membership')}</button>
           <p class="muted small">${t('A family admin will check and approve your account before you can see the tree.')}</p>
         </form>`;
@@ -367,7 +394,7 @@
         ${langRow()}
         <h1>${t('Set a new password')}</h1>
         <form id="recovery-form" class="stack">
-          <label>${t('New password')}<span class="pw-wrap"><input name="password" type="password" required minlength="8" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="${t('Show password')}">${t('Show')}</button></span></label>
+          <label>${t('New password')}<span class="pw-wrap"><input name="password" type="password" required minlength="10" autocomplete="new-password" enterkeyhint="go"><button type="button" class="pw-toggle" data-action="toggle-pw" aria-label="${t('Show password')}">${t('Show')}</button></span></label>
           <button class="btn primary" type="submit">${t('Save password')}</button>
         </form>
       </div></div>`;
@@ -447,6 +474,7 @@
     const gens = state.persons.filter((p) => !isSpouse(p)).reduce((m, p) => Math.max(m, lineage(p).length), 0);
     const chart = state.treeMode === 'chart';
     main.innerHTML = `
+      <div class="tree-tools" id="tree-tools">
       <section class="toolbar">
         <div class="search">
           <input id="search" type="search" placeholder="${t('Search for a name…')}" autocomplete="off" aria-label="${t('Search for a name…')}">
@@ -475,6 +503,7 @@
           <button class="btn ghost sm" data-action="collapse-all">${t('Collapse all')}</button>
         </div>
       </div>
+      </div>
       <div class="${chart ? 'tree-host' : 'tree'}" id="tree"></div>`;
     if (chart && !state.zoomSet) { state.zoom = window.innerWidth < 600 ? 0.7 : 1; state.zoomSet = true; }
     renderTreeBody({ center: true });
@@ -502,6 +531,7 @@
       </div>`;
     layoutChart();
     const w = document.getElementById('chart-wrap');
+    watchChartScroll(w);
     if (keep) { w.scrollLeft = keep.left; w.scrollTop = keep.top; } else {
       const first = document.querySelector('#chart-inner .unit');
       if (first) w.scrollLeft = Math.max(0, (first.offsetLeft + first.offsetWidth / 2) * state.zoom - w.clientWidth / 2);
@@ -607,6 +637,34 @@
         <path d="M0,0 L10,5 L0,10 z"/></marker></defs>
       <path class="couple" d="${couples}"/>
       <g class="desc">${arrows}</g>`;
+  }
+
+  // Scrolling down inside the chart slides the search and buttons away and lets the chart
+  // fill the screen; scrolling back up (or reaching the top) brings them back.
+  function watchChartScroll(wrap) {
+    const tools = document.getElementById('tree-tools');
+    if (!wrap || !tools) return;
+    let last = wrap.scrollTop;
+    const show = (on) => {
+      if (tools.classList.contains('slid-away') === !on) return;
+      if (on) {
+        tools.classList.remove('slid-away');
+        wrap.style.height = '';
+        return;
+      }
+      // Work out where the chart will sit once the tools are gone, and stretch it to the
+      // bottom of the screen right away (never smaller than it was).
+      const normal = wrap.offsetHeight;
+      const futureTop = Math.max(wrap.getBoundingClientRect().top - tools.offsetHeight, 0);
+      tools.classList.add('slid-away');
+      wrap.style.height = `${Math.max(normal, window.innerHeight - futureTop - 8)}px`;
+    };
+    wrap.addEventListener('scroll', () => {
+      const y = wrap.scrollTop;
+      if (y > last + 6 && y > 30) show(false);
+      else if (y < last - 6 || y < 10) show(true);
+      last = y;
+    }, { passive: true });
   }
 
   function setZoom(dir) {
@@ -729,9 +787,6 @@
       [t('Born'), [fmtDate(p.birth_date), p.birth_place].filter(Boolean).join(', ')],
       [t('Died'), p.is_living ? '' : fmtDate(p.death_date) || t('Late')],
       [t('Occupation'), p.occupation],
-      [t('Lives in'), p.current_address],
-      [t('Phone'), p.phone],
-      [t('Email'), p.email],
     ].filter(([, v]) => v);
     const photo = p.photo_path && state.photos.get(p.photo_path);
     $modalBody.dataset.id = id;
@@ -754,13 +809,20 @@
       ${path.length > 1 ? `<nav class="crumbs" aria-label="${t('Ancestry')}">${path.map((a, i) => (i === path.length - 1
         ? `<span>${esc(a.full_name)}</span>`
         : `<button class="link" data-action="open" data-id="${a.id}">${esc(a.full_name)}</button><span class="sep">${isSpouse(path[i + 1]) ? '⚭' : '›'}</span>`)).join('')}</nav>` : ''}
-      ${rows.length ? `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
+      <dl class="facts" id="facts"${rows.length ? '' : ' hidden'}>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
       ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
       ${partners.length ? `<h3>${partnerHeading}</h3>${chipList(partners)}` : ''}
       ${kids.length ? `<h3>${t('Children')}</h3>${chipList(kids)}` : ''}
       ${canEditAll() && !kids.length ? `<div class="danger-zone"><button class="btn danger sm" data-action="delete" data-id="${p.id}">${t('Delete {name}', { name: esc(p.full_name) })}</button></div>` : ''}`;
     if (!$modal.open) $modal.showModal();
     $modal.scrollTop = 0;
+    loadContact(p).then((c) => {
+      const dl = document.getElementById('facts');
+      if (!c || !dl || $modalBody.dataset.id !== id) return;
+      const extra = [[t('Lives in'), c.current_address], [t('Phone'), c.phone], [t('Email'), c.email]].filter(([, v]) => v);
+      dl.insertAdjacentHTML('beforeend', extra.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join(''));
+      if (extra.length) dl.hidden = false;
+    });
   }
 
   // ---------------------------------------------------------------- add / edit form
@@ -848,10 +910,10 @@
               <label class="check span2"><input type="checkbox" name="is_living" id="is-living" ${!p || p.is_living ? 'checked' : ''}> ${t('Living')}</label>
               <label id="death-wrap" ${!p || p.is_living ? 'hidden' : ''}>${t('Date of death')}<input name="death_date" type="date" value="${v('death_date')}"></label>
               <label>${t('Place of birth')}<input name="birth_place" value="${v('birth_place')}"></label>
-              <label>${t('Lives in')}<input name="current_address" value="${v('current_address')}" placeholder="${t('City, country')}"></label>
+              <label>${t('Lives in')}<input name="current_address" class="contact-field" placeholder="${t('City, country')}"></label>
               <label>${t('Occupation')}<input name="occupation" value="${v('occupation')}"></label>
-              <label>${t('Phone')}<input name="phone" type="tel" value="${v('phone')}"></label>
-              <label>${t('Email')}<input name="email" type="email" value="${v('email')}"></label>
+              <label>${t('Phone')}<input name="phone" type="tel" class="contact-field"></label>
+              <label>${t('Email')}<input name="email" type="email" class="contact-field"></label>
               <label class="span2">${t('About')}<textarea name="bio" rows="4" placeholder="${t('Stories, achievements, memories…')}">${v('bio')}</textarea></label>
             </div>
           </fieldset>
@@ -879,6 +941,18 @@
       </section>`;
     updateParentPreview();
     updateOtherParent(otherPick);
+    const form = document.getElementById('person-form');
+    if (!p) { form.dataset.contact = 'loaded'; return; }
+    form.querySelectorAll('.contact-field').forEach((el) => { el.disabled = true; el.placeholder = t('Loading…'); });
+    loadContact(p).then((c) => {
+      if (document.getElementById('person-form') !== form) return;
+      form.querySelectorAll('.contact-field').forEach((el) => {
+        el.disabled = !c;
+        el.placeholder = el.name === 'current_address' ? t('City, country') : '';
+        if (c) el.value = c[el.name] || '';
+      });
+      if (c) form.dataset.contact = 'loaded';
+    });
   }
 
   function updateParentPreview() {
@@ -915,6 +989,8 @@
       email: str('email'),
       bio: str('bio'),
     };
+    // Contact fields that couldn't be loaded are left exactly as they are in the database.
+    if (form.dataset.contact !== 'loaded') { delete rec.phone; delete rec.email; delete rec.current_address; }
     if (!rec.full_name) return toast(t('Please enter a name.'), 'error');
     if (!spouseOf && !rec.parent_id && !canEditAll() && !(existing && !existing.parent_id)) return toast(t('Please choose a parent.'), 'error');
     if (rec.other_parent_id && !spousesOf(rec.parent_id).some((x) => x.id === rec.other_parent_id)) rec.other_parent_id = null;
@@ -1016,7 +1092,7 @@
     </ol>`;
   }
 
-  function matchCard(p, action, buttonLabel) {
+  function matchCard(p, action, buttonLabel, doneLabel) {
     const path = isSpouse(p) ? '' : lineage(p).slice(0, -1).map((a) => a.full_name).join(' › ');
     const kids = childrenOf(p).map((k) => k.full_name);
     return `
@@ -1027,7 +1103,8 @@
           <div class="muted small">${isSpouse(p) ? esc(relationTo(p)) : path ? t('Descendant of {path}', { path: esc(path) }) : t('Top ancestor')}</div>
           ${kids.length ? `<div class="muted small">${t('Parent of {names}', { names: esc(kids.join(', ')) })}</div>` : ''}
         </div>
-        <button class="btn primary sm" data-action="${action}" data-id="${p.id}">${buttonLabel}</button>
+        ${doneLabel ? `<span class="pill tiny wait">${doneLabel}</span>`
+          : `<button type="button" class="btn primary sm" data-action="${action}" data-id="${p.id}">${buttonLabel}</button>`}
       </div>`;
   }
 
@@ -1122,7 +1199,7 @@
     const hits = nameMatches(name, { unlinkedOnly: true });
     box.innerHTML = hits.length
       ? `<div class="callout plain"><div><b>${t('Are you already in the tree?')}</b> ${t('Someone may have added you. If so, choose yourself.')}</div></div>
-         <div class="matches">${hits.map((p) => matchCard(p, 'wiz-claim', t('This is me'))).join('')}</div>`
+         <div class="matches">${hits.map((p) => matchCard(p, 'wiz-claim', t('This is me'), p.claim_requested_by === uid() ? t('Waiting for admin') : '')).join('')}</div>`
       : '';
   }
 
@@ -1142,15 +1219,6 @@
     btn.disabled = true;
     btn.textContent = t('Adding…');
     try {
-      let parentId = w.anchorId;
-      let otherId = w.anchorOther || null;
-      for (const a of [...w.chain].reverse()) {
-        const { data, error } = await sb.from('persons')
-          .insert({ ...a, parent_id: parentId, other_parent_id: otherId, created_by: uid() }).select('id').single();
-        if (error) throw error;
-        parentId = data.id;
-        otherId = null;
-      }
       const me = { ...w.me };
       const photo = me.photo;
       delete me.photo;
@@ -1162,15 +1230,24 @@
         if (error) throw error;
         me.photo_path = path;
       }
+      const { data: newId, error: rpcError } = await sb.rpc('connect_me', {
+        anchor: w.anchorId, anchor_other: w.anchorOther || null, ancestors: [...w.chain].reverse(), me,
+      });
+      if (!rpcError) { await finishConnect(newId); return; }
+      if (rpcError.code !== 'PGRST202') throw rpcError; // PGRST202: the database doesn't have connect_me yet
+      let parentId = w.anchorId;
+      let otherId = w.anchorOther || null;
+      for (const a of [...w.chain].reverse()) {
+        const { data, error } = await sb.from('persons')
+          .insert({ ...a, parent_id: parentId, other_parent_id: otherId, created_by: uid() }).select('id').single();
+        if (error) throw error;
+        parentId = data.id;
+        otherId = null;
+      }
       const { data, error } = await sb.from('persons')
         .insert({ ...me, is_living: true, parent_id: parentId, other_parent_id: otherId, user_id: uid(), created_by: uid() }).select('id').single();
       if (error) throw error;
-      state.wiz = null;
-      await loadPersons();
-      state.view = 'tree';
-      renderApp();
-      reveal(data.id);
-      toast(t('Welcome to the family tree!'), 'ok');
+      await finishConnect(data.id);
     } catch (e) {
       toast(friendlyError(e), 'error');
       btn.disabled = false;
@@ -1179,9 +1256,24 @@
     }
   }
 
+  async function finishConnect(newId) {
+    state.wiz = null;
+    await loadPersons();
+    state.view = 'tree';
+    renderApp();
+    reveal(newId);
+    toast(t('Welcome to the family tree!'), 'ok');
+  }
+
   async function claimPerson(id) {
-    const { error } = await sb.rpc('claim_person', { target: id });
+    const { data, error } = await sb.rpc('claim_person', { target: id });
     if (error) return toast(friendlyError(error), 'error');
+    if (data === 'requested') {
+      await loadPersons();
+      updateAlreadyInTree(document.getElementById('wiz-me-name')?.value || state.wiz?.me.full_name || '');
+      toast(t('Request sent. An admin will check that this is you, then link your account.'), 'ok');
+      return;
+    }
     state.wiz = null;
     await loadPersons();
     state.view = 'form';
@@ -1200,7 +1292,33 @@
     if (error) { main.innerHTML = `<p class="muted">${esc(error.message)}</p>`; return; }
     state.members = data;
     state.memberFilter ||= { q: '', role: 'all' };
+    const claims = state.persons.filter((p) => p.claim_requested_by);
+    const claimRow = (p) => {
+      const who = data.find((m) => m.id === p.claim_requested_by);
+      return `
+        <div class="member">
+          <div class="member-info">
+            <div class="name">${esc(who?.full_name || who?.email || t('Family member'))}</div>
+            <div class="muted small">${esc(who?.email || '')}</div>
+            <div class="small">${t('Says they are')} <button class="link" data-action="open" data-id="${p.id}">${esc(lineage(p).map((a) => a.full_name).join(' › '))}</button></div>
+          </div>
+          <div class="actions">
+            <button class="btn danger sm" data-action="claim-review" data-op="reject" data-id="${p.id}">${t('Reject')}</button>
+            <button class="btn primary sm" data-action="claim-review" data-op="approve" data-id="${p.id}">${t('Approve')}</button>
+          </div>
+        </div>`;
+    };
     main.innerHTML = `
+      ${claims.length ? `<section class="panel">
+        <h2>${t('“This is me” requests')} <span class="count">${num(claims.length)}</span></h2>
+        <p class="muted small">${t('Only approve if you know this member really is that person. Once linked, they can edit that entry.')}</p>
+        ${claims.map(claimRow).join('')}
+      </section>` : ''}
+      <section class="panel">
+        <h2>${t('Backup')}</h2>
+        <p class="muted small">${t('The free plan has no automatic backups. Download one now and then and keep it somewhere safe and private: it contains everyone’s details, members and chat messages. Photos and videos are listed but not included.')}</p>
+        <div class="actions start"><button class="btn" data-action="backup">⬇ ${t('Download backup')}</button></div>
+      </section>
       <section class="panel">
         <h2>${t('Site settings')}</h2>
         <p class="muted small">${t('The name and welcome line shown on the login page and at the top of every page. Leave the Nepali boxes empty to use the standard translation.')}</p>
@@ -1357,6 +1475,19 @@
   const CHAT_MAX_MB = 50;
   const CHAT_MAX_VIDEO_SECONDS = 15;
   const CHAT_MAX_VOICE_SECONDS = 120;
+  // Same list as the 'chat' storage bucket allows (supabase-update-hardening.sql).
+  const CHAT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif',
+    'video/mp4', 'video/quicktime', 'video/webm', 'video/3gpp',
+    'audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/wav', 'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/3gpp',
+    'application/pdf', 'text/plain', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+  // Some phones send documents without a type; work it out from the name.
+  const TYPE_BY_EXT = { pdf: 'application/pdf', txt: 'text/plain', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    heic: 'image/heic', heif: 'image/heif', m4a: 'audio/x-m4a', mov: 'video/quicktime', mp4: 'video/mp4', mp3: 'audio/mpeg' };
   const chat = {
     mounted: false, open: false, lang: null, messages: [], urls: new Map(), channel: null,
     hasOlder: false, unread: 0, pending: null, recorder: null, recTimer: null, sending: false,
@@ -1393,7 +1524,19 @@
     chat.channel = sb.channel('family-chat')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => chatAdd(p.new, true))
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) => chatRemoveLocal(p.old?.id))
-      .subscribe();
+      .subscribe((status) => {
+        if (status !== 'SUBSCRIBED') return;
+        if (chat.subscribedOnce) chatCatchUp(); // reconnected: fetch anything sent meanwhile
+        chat.subscribedOnce = true;
+      });
+  }
+
+  async function chatCatchUp() {
+    const last = chat.messages[chat.messages.length - 1];
+    if (!chat.mounted || !last) return;
+    const { data } = await sb.from('messages').select('*').gt('created_at', last.created_at)
+      .order('created_at', { ascending: true }).limit(100);
+    for (const m of data || []) await chatAdd(m, true);
   }
 
   function chatUnmount() {
@@ -1401,7 +1544,7 @@
     if (chat.recorder) chat.recorder.stop();
     document.getElementById('chat-fab')?.remove();
     document.getElementById('chat-panel')?.remove();
-    Object.assign(chat, { mounted: false, open: false, messages: [], urls: new Map(), channel: null, unread: 0, pending: null });
+    Object.assign(chat, { mounted: false, open: false, messages: [], urls: new Map(), channel: null, unread: 0, pending: null, subscribedOnce: false });
     document.body.classList.remove('chat-open');
   }
 
@@ -1630,8 +1773,12 @@
   async function chatPrepare(file) {
     if (!file) return;
     if (file.size > CHAT_MAX_MB * 1048576) { toast(t('That file is too big. The limit is {n} MB.', { n: CHAT_MAX_MB }), 'error'); return; }
-    const type = file.type || '';
-    let item = { kind: 'file', blob: file, type: type || 'application/octet-stream', name: file.name || 'file', duration: null };
+    const type = file.type || TYPE_BY_EXT[(file.name || '').split('.').pop().toLowerCase()] || '';
+    if (!CHAT_TYPES.includes(type)) {
+      toast(t("This type of file can't be sent in the chat. You can send photos, videos, audio, PDFs and Office documents."), 'error');
+      return;
+    }
+    let item = { kind: 'file', blob: file, type, name: file.name || 'file', duration: null };
     if (type.startsWith('image/') && !/gif|svg/.test(type)) {
       try {
         const blob = await resizeImage(file, 1600);
@@ -1750,7 +1897,12 @@
       setSeen(data.created_at);
       await chatAdd(data, false);
     } catch (e) {
-      toast(/size|too large|exceeded/i.test(e?.message || '') ? t('That file is too big. The limit is {n} MB.', { n: CHAT_MAX_MB }) : friendlyError(e), 'error');
+      const msg = e?.message || '';
+      toast(/size|too large|exceeded/i.test(msg) ? t('That file is too big. The limit is {n} MB.', { n: CHAT_MAX_MB })
+        : /too fast/i.test(msg) ? t('You are sending messages too fast. Please wait a minute.')
+          : /mime|type/i.test(msg) ? t("This type of file can't be sent in the chat. You can send photos, videos, audio, PDFs and Office documents.")
+            : p && /row-level security|unauthorized|403/i.test(msg) ? t('The chat has run out of space for files. Ask an admin to delete some old videos or files.')
+              : friendlyError(e), 'error');
     } finally {
       chat.sending = false;
       btn.disabled = false;
@@ -1812,11 +1964,29 @@
     }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && chat.open) {
+    if (document.visibilityState !== 'visible') return;
+    if (chat.open) {
       const last = chat.messages[chat.messages.length - 1];
       if (last) setSeen(last.created_at);
     }
+    if (chat.mounted) chatCatchUp();
+    refreshLinksIfOld();
   });
+  setInterval(refreshLinksIfOld, 15 * 60e3);
+
+  // Photo and chat-file links are valid for 6 hours; renew them after 5 so nothing shows broken.
+  async function refreshLinksIfOld() {
+    if (state.screen !== 'app' || !state.signedAt || Date.now() - state.signedAt < 5 * 3600e3) return;
+    try {
+      await loadPersons();
+      if (!$modal.open && !document.getElementById('person-form')) renderView();
+      if (chat.mounted) {
+        chat.urls = new Map();
+        await chatSignUrls(chat.messages);
+        chatRenderList(false);
+      }
+    } catch { /* try again on the next check */ }
+  }
 
   // ---------------------------------------------------------------- events
 
@@ -1884,6 +2054,30 @@
       case 'edit': $modal.close(); setView('form', { editId: id }); break;
       case 'delete': deletePerson(id); break;
       case 'member': memberOp(id, el.dataset.op); break;
+      case 'claim-review': {
+        const approve = el.dataset.op === 'approve';
+        const { error } = await sb.rpc('review_claim', { target: id, approve });
+        if (error) { toast(friendlyError(error), 'error'); break; }
+        await loadPersons();
+        toast(approve ? t('Linked.') : t('Request rejected.'), 'ok');
+        renderAdmin();
+        break;
+      }
+      case 'backup': {
+        el.disabled = true;
+        const { data, error } = await sb.rpc('admin_export');
+        el.disabled = false;
+        if (error) { toast(friendlyError(error), 'error'); break; }
+        const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `tuladhar-family-tree-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        toast(t('Backup downloaded. Keep the file private.'), 'ok');
+        break;
+      }
       case 'role-filter':
         state.memberFilter.role = state.memberFilter.role === el.dataset.role ? 'all' : el.dataset.role;
         renderMemberLists();
@@ -1948,7 +2142,9 @@
     }
     if (e.target.id === 'is-living') document.getElementById('death-wrap').hidden = e.target.checked;
     if (e.target.id === 'photo-input' && e.target.files[0]) {
+      if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
       const url = URL.createObjectURL(e.target.files[0]);
+      state.previewUrl = url;
       document.getElementById('photo-preview').innerHTML = `<img class="photo" src="${url}" alt="">`;
     }
   });
